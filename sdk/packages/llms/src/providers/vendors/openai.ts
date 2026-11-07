@@ -19,10 +19,14 @@ function isChatGptOAuthBaseUrl(baseUrl: string | undefined): boolean {
 }
 
 export async function createOpenAIProviderModule(
-	config: GatewayResolvedProviderConfig,
-	context: GatewayProviderContext,
+	_config: GatewayResolvedProviderConfig,
+	_context: GatewayProviderContext,
 ): Promise<ProviderFactoryResult> {
-	const apiKey = await resolveApiKey(config);
+	// TODO: Replace with TrueFoundry / external harness integration.
+	throw new Error(
+		"Direct model provider calls are disabled in this skeleton. Direct connection to OpenAI is not permitted.",
+	);
+	const apiKey = await resolveApiKey(_config);
 	const provider = createOpenAI({
 		apiKey,
 		baseURL: config.baseUrl,

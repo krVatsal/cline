@@ -2181,11 +2181,14 @@ export function withEmptyResponseRetry(
 function createAiSdkProvider(
 	defaultKind: ProviderModuleKind,
 ): GatewayProviderFactory {
-	return async (config) => ({
-		async *stream(request, context) {
-			// Multi-protocol HTTP gateways declare model adapters in models.dev.
-			// Keep native and local CLI transports authoritative for their models.
-			const kind = resolveModelProviderKind(defaultKind, context);
+	return async (_config) => ({
+		// biome-ignore lint/correctness/useYield: stub
+		async *stream(_request, _context) {
+			// TODO: Replace with TrueFoundry / external harness integration.
+			throw new Error(
+				`Direct model provider calls are disabled in this skeleton. No direct connection to '${defaultKind}' is permitted. All model interactions must route through an external gateway.`,
+			);
+			const kind = resolveModelProviderKind(defaultKind, _context);
 			const log = context.logger;
 			let stream: AiSdkStreamResult | undefined;
 			const capturedError: { current: CapturedStreamError | undefined } = {

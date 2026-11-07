@@ -183,9 +183,13 @@ function hasBedrockCatalogModel(modelId: string): boolean {
 }
 
 export async function createBedrockProviderModule(
-	config: GatewayResolvedProviderConfig,
+	_config: GatewayResolvedProviderConfig,
 ): Promise<ProviderFactoryResult> {
-	const authentication = readAuthentication(config.options?.authentication);
+	// TODO: Replace with TrueFoundry / external harness integration.
+	throw new Error(
+		"Direct model provider calls are disabled in this skeleton. Direct connection to AWS Bedrock is not permitted.",
+	);
+	const authentication = readAuthentication(_config.options?.authentication);
 	const usesApiKeyAuth =
 		authentication === "api-key" || authentication === "apikey";
 	const hasDirectCredentials =

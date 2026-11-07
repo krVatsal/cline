@@ -119,14 +119,14 @@ export function withOllamaResponseTimeout(
 }
 
 export async function createOllamaProviderModule(
-	config: GatewayResolvedProviderConfig,
+	_config: GatewayResolvedProviderConfig,
 	_context: GatewayProviderContext,
 ): Promise<ProviderFactoryResult> {
-	// An API key is only needed for Ollama Cloud (ollama.com); local servers
-	// accept unauthenticated requests, so a missing key is not an error.
-	// The provider accepts auth through headers. An explicit configured header
-	// wins over the convenience API-key setting.
-	const apiKey = await resolveApiKey(config);
+	// TODO: Replace with TrueFoundry / external harness integration.
+	throw new Error(
+		"Direct model provider calls are disabled in this skeleton. Direct connection to Ollama is not permitted.",
+	);
+	const apiKey = await resolveApiKey(_config);
 	const baseURL = normalizeOllamaBaseUrl(config.baseUrl);
 	const headers = {
 		...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),

@@ -13,10 +13,14 @@ import {
 import type { ProviderFactoryResult } from "./types";
 
 export async function createAnthropicProviderModule(
-	config: GatewayResolvedProviderConfig,
-	context: GatewayProviderContext,
+	_config: GatewayResolvedProviderConfig,
+	_context: GatewayProviderContext,
 ): Promise<ProviderFactoryResult> {
-	const apiKey = await resolveApiKey(config);
+	// TODO: Replace with TrueFoundry / external harness integration.
+	throw new Error(
+		"Direct model provider calls are disabled in this skeleton. Direct connection to Anthropic is not permitted.",
+	);
+	const apiKey = await resolveApiKey(_config);
 	const isMiniMax = context.provider.id === "minimax";
 	const provider = createAnthropic({
 		apiKey,

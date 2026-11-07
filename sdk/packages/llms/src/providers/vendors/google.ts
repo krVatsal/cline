@@ -27,10 +27,14 @@ export function normalizeGeminiBaseUrl(
 }
 
 export async function createGoogleProviderModule(
-	config: GatewayResolvedProviderConfig,
-	context: GatewayProviderContext,
+	_config: GatewayResolvedProviderConfig,
+	_context: GatewayProviderContext,
 ): Promise<ProviderFactoryResult> {
-	const apiKey = await resolveApiKey(config);
+	// TODO: Replace with TrueFoundry / external harness integration.
+	throw new Error(
+		"Direct model provider calls are disabled in this skeleton. Direct connection to Google is not permitted.",
+	);
+	const apiKey = await resolveApiKey(_config);
 	const provider = createGoogleGenerativeAI({
 		apiKey,
 		baseURL: normalizeGeminiBaseUrl(config.baseUrl),
