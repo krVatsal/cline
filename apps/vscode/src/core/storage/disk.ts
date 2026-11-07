@@ -1,4 +1,3 @@
-import { Anthropic } from "@anthropic-ai/sdk"
 import { TaskMetadata } from "@core/context/context-tracking/ContextTrackerTypes"
 import { RemoteConfig } from "@shared/remote-config/schema"
 import { GlobalState, Settings } from "@shared/storage/state-keys"
@@ -152,7 +151,7 @@ export async function getMcpSettingsFilePath(settingsDirectoryPath: string): Pro
 	return mcpSettingsFilePath
 }
 
-export async function getSavedApiConversationHistory(taskId: string): Promise<Anthropic.MessageParam[]> {
+export async function getSavedApiConversationHistory(taskId: string): Promise<any[]> {
 	const filePath = path.join(await ensureTaskDirectoryExists(taskId), GlobalFileNames.apiConversationHistory)
 	const fileExists = await fileExistsAtPath(filePath)
 	if (fileExists) {

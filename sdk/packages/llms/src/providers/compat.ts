@@ -638,39 +638,11 @@ class GatewayApiHandler implements ApiHandler {
 	}
 
 	createMessage(
-		systemPrompt: string,
-		messages: Message[],
-		tools?: ToolDefinition[],
+		_systemPrompt: string,
+		_messages: Message[],
+		_tools?: ToolDefinition[],
 	): ApiStream {
-		const gateway = createGateway({
-			providerConfigs: [buildGatewayConfig(this.config)],
-			fetch: this.config.fetch,
-			logger: this.config.logger ?? this.config.extensionContext?.logger,
-			telemetry: this.config.extensionContext?.telemetry,
-		});
-		const registration = resolveGatewayProviderRegistrationSync(this.config);
-		if (registration) {
-			gateway.registerProvider(registration);
-		}
-
-		const request = buildGatewayRequest(
-			this.config,
-			systemPrompt,
-			messages,
-			tools,
-			this.abortSignal,
-		);
-		const id = `gw_${nanoid(10)}`;
-		const stream = (async function* () {
-			for await (const event of await gateway.stream(request)) {
-				const chunk = toApiStreamChunk(id, event);
-				if (chunk) {
-					yield chunk;
-				}
-			}
-		})() as ApiStream;
-		stream.id = id;
-		return stream;
+		throw new Error("Direct model provider calls are disabled. All requests must route via TrueFoundry.");
 	}
 
 	getModel(): HandlerModelInfo {

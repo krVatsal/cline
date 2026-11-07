@@ -1,17 +1,15 @@
 import { Empty, EmptyRequest } from "@shared/proto/cline/common"
 import { HostProvider } from "@/hosts/host-provider"
-import { openExternal } from "@/utils/env"
+import { ShowMessageType } from "@/shared/proto/host/window"
 import { Controller } from ".."
 
 /**
- * Initiates OpenRouter auth
+ * Initiates OpenRouter auth (disabled - all routing goes through TrueFoundry)
  */
 export async function openrouterAuthClicked(_: Controller, __: EmptyRequest): Promise<Empty> {
-	const callbackUrl = await HostProvider.get().getCallbackUrl("/openrouter")
-	const authUrl = new URL("https://openrouter.ai/auth")
-	authUrl.searchParams.set("callback_url", callbackUrl)
-
-	await openExternal(authUrl.toString())
-
+	HostProvider.window.showMessage({
+		type: ShowMessageType.INFO,
+		message: "Direct provider authentication is disabled. All routing will go through TrueFoundry.",
+	})
 	return {}
 }

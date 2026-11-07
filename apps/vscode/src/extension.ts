@@ -40,7 +40,6 @@ import {
 } from "./core/storage/state-migrations"
 import { workspaceResolver } from "./core/workspace"
 import { findMatchingNotebookCell, getContextForCommand, showWebview } from "./hosts/vscode/commandUtils"
-import { abortCommitGeneration, generateCommitMsg } from "./hosts/vscode/commit-message-generator"
 import { registerClineOutputChannel } from "./hosts/vscode/hostbridge/env/debugLog"
 import {
 	disposeVscodeCommentReviewController,
@@ -482,13 +481,13 @@ ${ctx.cellJson || "{}"}
 		}),
 	)
 
-	// Register the generateGitCommitMessage command handler
+	// Register the generateGitCommitMessage command handler (disabled until harness connection)
 	context.subscriptions.push(
-		vscode.commands.registerCommand(commands.GenerateCommit, async (scm) => {
-			generateCommitMsg(webview.controller, scm)
+		vscode.commands.registerCommand(commands.GenerateCommit, async () => {
+			vscode.window.showInformationMessage("Commit message generation is disabled until agent harness is connected.")
 		}),
 		vscode.commands.registerCommand(commands.AbortCommit, () => {
-			abortCommitGeneration()
+			// No-op when commit generation is disabled
 		}),
 	)
 

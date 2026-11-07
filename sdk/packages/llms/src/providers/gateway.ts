@@ -331,8 +331,11 @@ export class DefaultGateway implements Gateway {
 	}
 
 	async stream(
-		request: GatewayStreamRequest,
+		_request: GatewayStreamRequest,
 	): Promise<AsyncIterable<AgentModelEvent>> {
+		throw new Error(
+			"Direct model provider streaming is disabled. All requests must route via TrueFoundry."
+		);
 		const resolved = this.registry.resolveModel({
 			providerId: request.providerId,
 			modelId: request.modelId || undefined,

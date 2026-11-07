@@ -104,40 +104,12 @@ function withNormalizedProviderId(config: ProviderConfig): ProviderConfig {
 	return { ...config, providerId, routingProviderId };
 }
 
-export function createHandler(config: ProviderConfig): ApiHandler {
-	const normalizedConfig = withNormalizedProviderId(config);
-	const { providerId } = normalizedConfig;
-
-	if (hasRegisteredHandler(providerId)) {
-		if (isRegisteredHandlerAsync(providerId)) {
-			throw new Error(
-				`Handler for "${providerId}" is registered as async. Use createHandlerAsync() instead.`,
-			);
-		}
-		const handler = getRegisteredHandler(providerId, normalizedConfig);
-		if (handler) {
-			return handler;
-		}
-	}
-
-	return createGatewayApiHandler(normalizedConfig);
+export function createHandler(_config: ProviderConfig): ApiHandler {
+	throw new Error("Direct model provider calls are disabled. All requests must route via TrueFoundry.");
 }
 
 export async function createHandlerAsync(
-	config: ProviderConfig,
+	_config: ProviderConfig,
 ): Promise<ApiHandler> {
-	const normalizedConfig = withNormalizedProviderId(config);
-	const { providerId } = normalizedConfig;
-
-	if (hasRegisteredHandler(providerId)) {
-		const handler = await getRegisteredHandlerAsync(
-			providerId,
-			normalizedConfig,
-		);
-		if (handler) {
-			return handler;
-		}
-	}
-
-	return createGatewayApiHandlerAsync(normalizedConfig);
+	throw new Error("Direct model provider calls are disabled. All requests must route via TrueFoundry.");
 }

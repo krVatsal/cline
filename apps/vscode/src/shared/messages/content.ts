@@ -1,5 +1,57 @@
-import type { Anthropic } from "@anthropic-ai/sdk"
 import type { ClineMessageMetricsInfo, ClineMessageModelInfo } from "./metrics"
+
+export namespace Anthropic {
+	export interface TextBlockParam {
+		type: "text"
+		text: string
+		cache_control?: any
+	}
+	export interface ImageBlockParam {
+		type: "image"
+		source: {
+			type: "base64"
+			media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp" | string
+			data: string
+		} | {
+			type?: string
+			[key: string]: any
+		}
+		cache_control?: any
+	}
+	export interface DocumentBlockParam {
+		type: "document"
+		source: any
+		cache_control?: any
+	}
+	export interface ToolResultBlockParam {
+		type: "tool_result"
+		tool_use_id: string
+		content?: string | Array<any>
+		is_error?: boolean
+		cache_control?: any
+	}
+	export interface ToolUseBlockParam {
+		type: "tool_use"
+		id: string
+		name: string
+		input: unknown
+		cache_control?: any
+	}
+	export interface ThinkingBlock {
+		type: "thinking"
+		thinking: string
+		signature?: string
+	}
+	export interface RedactedThinkingBlockParam {
+		type: "redacted_thinking"
+		data: string
+	}
+	export type ContentBlock = any
+	export interface MessageParam {
+		role: "user" | "assistant"
+		content: string | Array<any>
+	}
+}
 
 export type ClinePromptInputContent = string
 
