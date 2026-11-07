@@ -43,10 +43,14 @@ export type {
 export { createTool } from "@cline/shared";
 export type {
 	AgentEventListener,
+	AgentHarness,
+	AgentHarnessContext,
 	AgentRunInput,
 	AgentRuntimeConfig,
 	AgentRuntimeConfigWithModel,
 	AgentRuntimeConfigWithProvider,
+	HookBag,
+	PreparedToolExecution,
 } from "./agent-runtime";
 export {
 	Agent,
