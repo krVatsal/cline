@@ -8,7 +8,7 @@ import { Controller } from ".."
  */
 export async function openAiCodexSignIn(_controller: Controller, _: EmptyRequest): Promise<Empty> {
 	HostProvider.window.showMessage({
-		type: ShowMessageType.INFO,
+		type: ShowMessageType.INFORMATION,
 		message: "Direct provider authentication is disabled. All routing will go through TrueFoundry.",
 	})
 	return {}

@@ -19,27 +19,11 @@ export {
 	type ProviderId,
 } from "./providers/types";
 
-import {
-	createGatewayApiHandler,
-	createGatewayApiHandlerAsync,
-} from "./providers/compat";
-
 export {
 	resolveGatewayProviderRegistration,
 	resolveGatewayProviderRegistrationSync,
 } from "./providers/compat";
-
-import {
-	getRegisteredHandler,
-	getRegisteredHandlerAsync,
-	hasRegisteredHandler,
-	isRegisteredHandlerAsync,
-} from "./providers/factory-registry";
-import {
-	type ApiHandler,
-	normalizeProviderId,
-	type ProviderConfig,
-} from "./providers/types";
+import type { ApiHandler, ProviderConfig } from "./providers/types";
 
 export {
 	classifyProviderError,
@@ -89,20 +73,6 @@ export type {
 	ToolResultContent,
 	ToolUseContent,
 } from "./providers/types";
-
-function withNormalizedProviderId(config: ProviderConfig): ProviderConfig {
-	const providerId = normalizeProviderId(config.providerId);
-	const routingProviderId = config.routingProviderId
-		? normalizeProviderId(config.routingProviderId)
-		: undefined;
-	if (
-		providerId === config.providerId &&
-		routingProviderId === config.routingProviderId
-	) {
-		return config;
-	}
-	return { ...config, providerId, routingProviderId };
-}
 
 export function createHandler(_config: ProviderConfig): ApiHandler {
 	throw new Error("Direct model provider calls are disabled. All requests must route via TrueFoundry.");

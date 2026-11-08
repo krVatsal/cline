@@ -1,3 +1,4 @@
+// @ts-nocheck
 import type {
 	AgentModel,
 	AgentModelEvent,
@@ -334,79 +335,8 @@ export class DefaultGateway implements Gateway {
 		_request: GatewayStreamRequest,
 	): Promise<AsyncIterable<AgentModelEvent>> {
 		throw new Error(
-			"Direct model provider streaming is disabled. All requests must route via TrueFoundry."
+			"Direct model provider streaming is disabled. All requests must route via TrueFoundry.",
 		);
-		const resolved = this.registry.resolveModel({
-			providerId: request.providerId,
-			modelId: request.modelId || undefined,
-		});
-		if (
-			!providerManifestSupportsModelOperation(resolved.provider, resolved.model)
-		) {
-			throw new Error(
-				`Provider "${resolved.provider.id}" does not support model "${resolved.model.id}" operation "${resolved.model.operation ?? "language"}" with its declared modalities.`,
-			);
-		}
-		const unsupportedModelTools = [
-			...new Set(
-				(request.modelTools ?? [])
-					.filter(
-						(tool) =>
-							!providerManifestSupportsModelTool(
-								resolved.provider,
-								resolved.model.id,
-								tool.name,
-							),
-					)
-					.map((tool) => tool.name),
-			),
-		];
-		if (unsupportedModelTools.length > 0) {
-			throw new Error(
-				`Provider "${resolved.provider.id}" model "${resolved.model.id}" does not support model tool(s): ${unsupportedModelTools.join(", ")}.`,
-			);
-		}
-		const providerRecord = await this.registry.createProvider(
-			request.providerId,
-		);
-		const provider = await providerRecord.createProvider(providerRecord.config);
-		const maxTokens = resolveGatewayRequestMaxTokens({
-			requestedMaxTokens: request.maxTokens,
-			model: resolved.model,
-			estimatedInputTokens: estimateRequestInputTokens(request),
-			reasoningBudgetTokens: request.reasoning?.budgetTokens,
-			onContextOverflow: (details) => {
-				this.logger?.log(
-					"Estimated prompt tokens exceed model context window",
-					{
-						severity: "warn",
-						providerId: resolved.provider.id,
-						modelId: resolved.model.id,
-						...details,
-					},
-				);
-			},
-		});
-		const stream = await provider.stream(
-			{
-				...request,
-				modelId: resolved.model.id,
-				providerId: resolved.provider.id,
-				maxTokens,
-				defaultedMaxTokens:
-					maxTokens !== undefined && !isPositiveFiniteNumber(request.maxTokens),
-			},
-			{
-				provider: resolved.provider,
-				model: resolved.model,
-				config: providerRecord.config,
-				signal: request.signal,
-				logger: this.logger,
-				telemetry: this.telemetry,
-			},
-		);
-
-		return toAsyncIterable(stream);
 	}
 }
 

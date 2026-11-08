@@ -1,33 +1,14 @@
-import { createMistral } from "@ai-sdk/mistral";
-import type { LanguageModelV4 } from "@ai-sdk/provider";
-import type { GatewayResolvedProviderConfig } from "@cline/shared";
-import { wrapLanguageModel } from "ai";
-import { resolveApiKey } from "../http";
-import { splitToolImagesMiddleware } from "../middleware/split-tool-images";
+import type {
+	GatewayProviderContext,
+	GatewayResolvedProviderConfig,
+} from "@cline/shared";
 import type { ProviderFactoryResult } from "./types";
 
 export async function createMistralProviderModule(
-	config: GatewayResolvedProviderConfig,
+	_config: GatewayResolvedProviderConfig,
+	_context?: GatewayProviderContext,
 ): Promise<ProviderFactoryResult> {
-	const provider = createMistral({
-		apiKey: await resolveApiKey(config),
-		baseURL: config.baseUrl,
-		headers: config.headers,
-		fetch: config.fetch,
-	});
-	return {
-		// Mistral's chat-messages converter has the same multimodal-tool-message
-		// limitation as `@ai-sdk/openai-compatible`: `role:"tool"` content must
-		// be a single string, so a `ToolResultOutput` of type `'content'` with
-		// image-data parts loses the bytes when serialised. Wrap with
-		// `splitToolImagesMiddleware` to rewrite the typed prompt before the
-		// converter runs. See `middleware/split-tool-images.ts`.
-		operations: {
-			language: (modelId) =>
-				wrapLanguageModel({
-					model: provider(modelId) as LanguageModelV4,
-					middleware: splitToolImagesMiddleware,
-				}),
-		},
-	};
+	throw new Error(
+		"Direct model provider calls are disabled in this skeleton. Direct connection to Mistral AI is not permitted.",
+	);
 }

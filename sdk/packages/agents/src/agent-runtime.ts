@@ -14,7 +14,6 @@ import type {
 	AgentModelEvent,
 	AgentModelFinishReason,
 	AgentModelRequest,
-	AgentModelToolActivity,
 	AgentRunResult,
 	AgentRuntimeEvent,
 	AgentRuntimeHooks,
@@ -54,7 +53,7 @@ interface PreparedModelRequest {
 	startedAt: number;
 }
 
-const MAX_TOKENS_INCOMPLETE_TURN_MESSAGE =
+export const MAX_TOKENS_INCOMPLETE_TURN_MESSAGE =
 	"Model reached the maximum output token limit before completing the turn";
 
 /**
@@ -65,9 +64,9 @@ const MAX_TOKENS_INCOMPLETE_TURN_MESSAGE =
  * of consecutive cut-off turns — a single over-long response recovers, while a
  * model that keeps overflowing still ends rather than looping forever.
  */
-const MAX_TOKENS_RECOVERY_LIMIT = 3;
+export const MAX_TOKENS_RECOVERY_LIMIT = 3;
 /** Nudge appended after an output-limit cut-off, asking for more concise output. */
-const MAX_TOKENS_RECOVERY_NUDGE =
+export const MAX_TOKENS_RECOVERY_NUDGE =
 	"Your previous response was cut off because it reached the model's output-token limit before finishing. Keep responses concise: take one small step at a time, avoid long explanations, and write large files or command output in smaller chunks across multiple tool calls.";
 
 /**
@@ -80,18 +79,18 @@ const MAX_TOKENS_RECOVERY_NUDGE =
  * their existing single-request path, so this does not change behavior for
  * models whose endpoints do not throw transient errors.
  */
-const PROVIDER_ERROR_MAX_RETRIES = 3;
+export const PROVIDER_ERROR_MAX_RETRIES = 3;
 /** Base backoff before the first retry; doubled each subsequent attempt. */
-const PROVIDER_ERROR_RETRY_BASE_DELAY_MS = 1_000;
+export const PROVIDER_ERROR_RETRY_BASE_DELAY_MS = 1_000;
 /** Upper bound on any single backoff wait. */
-const PROVIDER_ERROR_RETRY_MAX_DELAY_MS = 15_000;
+export const PROVIDER_ERROR_RETRY_MAX_DELAY_MS = 15_000;
 
 /**
  * Terminal message for a turn the provider blocked. Kept separate from the
  * generic empty-response text because the two call for opposite user action:
  * an empty response is worth retrying, a filtered one reproduces every time.
  */
-const CONTENT_FILTER_EMPTY_TURN_MESSAGE =
+export const CONTENT_FILTER_EMPTY_TURN_MESSAGE =
 	"Model returned no content because the response was blocked by a content filter. Retrying is unlikely to help — try rephrasing the request.";
 
 /**
@@ -508,7 +507,7 @@ function cloneMessages(messages: readonly AgentMessage[]): AgentMessage[] {
 	}));
 }
 
-function usageDelta(
+export function usageDelta(
 	start: AgentUsage,
 	end: AgentUsage,
 ): NonNullable<AgentMessage["metrics"]> | undefined {
@@ -574,7 +573,7 @@ function textFromMessage(message: AgentMessage | undefined): string {
 		.join("");
 }
 
-function textFromToolMessage(message: AgentMessage | undefined): string {
+export function textFromToolMessage(message: AgentMessage | undefined): string {
 	const result = message?.content.find(
 		(part): part is Extract<AgentMessagePart, { type: "tool-result" }> =>
 			part.type === "tool-result",
@@ -592,7 +591,7 @@ function textFromToolMessage(message: AgentMessage | undefined): string {
 	}
 }
 
-function normalizeInput(input: AgentRunInput): AgentMessage[] {
+export function normalizeInput(input: AgentRunInput): AgentMessage[] {
 	if (typeof input === "string") {
 		return [createMessage("user", [{ type: "text", text: input }])];
 	}
@@ -666,11 +665,11 @@ export class AgentRuntime {
 		lastFinishReason: undefined as AgentModelFinishReason | undefined,
 	};
 	/** One automatic overflow-recovery attempt per run. */
-	private overflowRecoveryAttempted = false;
+	protected overflowRecoveryAttempted = false;
 	/** Consecutive output-limit cut-offs recovered this run; see MAX_TOKENS_RECOVERY_LIMIT. */
-	private maxTokensRecoveryCount = 0;
+	protected maxTokensRecoveryCount = 0;
 	/** One automatic recovery attempt per run for max-tokens-truncated turns. */
-	private maxTokensRecoveryAttempted = false;
+	protected maxTokensRecoveryAttempted = false;
 	private initialization?: Promise<void>;
 	private abortController?: AbortController;
 	private modelSteerController?: AbortController;
@@ -836,7 +835,7 @@ export class AgentRuntime {
 		)}. Continue working if requirements are not met. If the task is complete, call the appropriate terminal completion tool now.`;
 	}
 
-	private getCompletionReminderMessages(): string[] {
+	protected getCompletionReminderMessages(): string[] {
 		return [
 			this.getCompletionToolReminderMessage(),
 			this.config.completionPolicy?.completionGuard?.(),
@@ -860,7 +859,7 @@ export class AgentRuntime {
 		return reminderMessage;
 	}
 
-	private async execute(input?: AgentRunInput): Promise<AgentRunResult> {
+	private async execute(_input?: AgentRunInput): Promise<AgentRunResult> {
 		await this.ensureInitialized();
 		if (this.state.status === "running") {
 			throw new Error("Agent runtime is already running");
@@ -902,7 +901,7 @@ export class AgentRuntime {
 	 * responsible for flushing pending hook contexts via AgentHarnessContext.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async flushPendingHookContexts(): Promise<void> {
+	protected async flushPendingHookContexts(): Promise<void> {
 		// TODO: Replace with external AgentHarness implementation.
 		throw new Error(
 			"Agent runtime is not connected to a harness yet. " +
@@ -915,7 +914,7 @@ export class AgentRuntime {
 	 * responsible for invoking beforeRun hooks via AgentHarnessContext.hooks.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async callBeforeRunHooks(): Promise<void> {
+	protected async callBeforeRunHooks(): Promise<void> {
 		// TODO: Replace with external AgentHarness implementation.
 		throw new Error(
 			"Agent runtime is not connected to a harness yet. " +
@@ -928,7 +927,7 @@ export class AgentRuntime {
 	 * responsible for invoking afterRun hooks via AgentHarnessContext.hooks.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async callAfterRunHooks(_result: AgentRunResult): Promise<void> {
+	protected async callAfterRunHooks(_result: AgentRunResult): Promise<void> {
 		// TODO: Replace with external AgentHarness implementation.
 		throw new Error(
 			"Agent runtime is not connected to a harness yet. " +
@@ -941,7 +940,7 @@ export class AgentRuntime {
 	 * AgentHarness is responsible for all recovery strategies.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async recoverFromIncompleteMaxTokensTurn(): Promise<boolean> {
+	protected async recoverFromIncompleteMaxTokensTurn(): Promise<boolean> {
 		// TODO: Replace with external AgentHarness implementation.
 		throw new Error(
 			"Agent runtime is not connected to a harness yet. " +
@@ -954,7 +953,7 @@ export class AgentRuntime {
 	 * AgentHarness is responsible for all model turn generation.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async generateAssistantMessageWithProviderRetry(): Promise<{
+	protected async generateAssistantMessageWithProviderRetry(): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 		interrupted?: boolean;
@@ -970,7 +969,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop's LLM retry orchestration.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async withProviderErrorRetry<
+	protected async withProviderErrorRetry<
 		T extends { message: AgentMessage; finishReason: AgentModelFinishReason },
 	>(_issue: () => Promise<T>): Promise<T> {
 		// TODO: Replace with external AgentHarness implementation.
@@ -985,7 +984,7 @@ export class AgentRuntime {
 	 * for classifying retryable errors.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private isRetryableProviderErrorTurn(_turn: {
+	protected isRetryableProviderErrorTurn(_turn: {
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 	}): boolean {
@@ -1004,7 +1003,7 @@ export class AgentRuntime {
 	 * whose "nothing to compact" error reports the first attempt's provider
 	 * message.
 	 */
-	private resetLastError(): void {
+	protected resetLastError(): void {
 		this.state.lastError = undefined;
 		this.state.lastErrorClass = undefined;
 		this.state.lastErrorRetryable = undefined;
@@ -1015,7 +1014,7 @@ export class AgentRuntime {
 	 * Sleep for `ms`, rejecting early with the abort error if the run is
 	 * aborted while waiting, so a retry backoff never blocks cancellation.
 	 */
-	private async abortableDelay(ms: number): Promise<void> {
+	protected async abortableDelay(ms: number): Promise<void> {
 		this.throwIfAborted();
 		const signal = this.abortController?.signal;
 		await new Promise<void>((resolve, reject) => {
@@ -1037,7 +1036,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop's context-overflow recovery.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async generateAssistantMessageWithOverflowRecovery(): Promise<{
+	protected async generateAssistantMessageWithOverflowRecovery(): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 		interrupted?: boolean;
@@ -1053,7 +1052,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop's overflow classification.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private isRecoverableOverflowTurn(_turn: {
+	protected isRecoverableOverflowTurn(_turn: {
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 	}): boolean {
@@ -1068,7 +1067,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop's max-tokens classification.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private isRecoverableMaxTokensTurn(_turn: {
+	protected isRecoverableMaxTokensTurn(_turn: {
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 	}): boolean {
@@ -1080,7 +1079,7 @@ export class AgentRuntime {
 	}
 
 	/** Tool activity executed outside AgentRuntime is recorded in metadata. */
-	private hasModelToolActivity(message: AgentMessage): boolean {
+	protected hasModelToolActivity(message: AgentMessage): boolean {
 		const activities = message.metadata?.modelToolActivities;
 		return Array.isArray(activities) && activities.length > 0;
 	}
@@ -1089,7 +1088,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop's max-tokens compaction recovery.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async retryTruncatedTurnWithCompaction(_first: {
+	protected async retryTruncatedTurnWithCompaction(_first: {
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 	}): Promise<{
@@ -1127,7 +1126,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop's LLM turn dispatch.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async generateAssistantMessage(_options?: {
+	protected async generateAssistantMessage(_options?: {
 		overflowRecovery?: boolean;
 	}): Promise<{
 		message: AgentMessage;
@@ -1145,7 +1144,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop — re-issues a prepared request.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async issuePreparedRequest(_prepared: PreparedModelRequest): Promise<{
+	protected async issuePreparedRequest(_prepared: PreparedModelRequest): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 		interrupted?: boolean;
@@ -1244,7 +1243,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop — ties preparation + streaming.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async generateAssistantMessageForRequest(
+	protected async generateAssistantMessageForRequest(
 		_steerController: AbortController,
 		_options?: { overflowRecovery?: boolean },
 	): Promise<{
@@ -1263,7 +1262,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop — streams a prepared LLM request.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async streamPreparedRequest(
+	protected async streamPreparedRequest(
 		_prepared: PreparedModelRequest,
 		_steerController: AbortController,
 	): Promise<{
@@ -1282,7 +1281,7 @@ export class AgentRuntime {
 	 * @deprecated Part of the agentic loop — wraps model.stream() with
 	 * task lifecycle telemetry. TODO: Replace with external AgentHarness implementation.
 	 */
-	private async *openTaskLifecycleStream(
+	protected async *openTaskLifecycleStream(
 		_request: AgentModelRequest,
 		_getTaskLifecycleDurationMs: () => number | undefined,
 	): AsyncIterable<AgentModelEvent> {
@@ -1295,7 +1294,7 @@ export class AgentRuntime {
 		yield* [] as AgentModelEvent[];
 	}
 
-	private captureTaskLifecycleFailure(
+	protected captureTaskLifecycleFailure(
 		error: unknown,
 		phase: string,
 		durationMs: number | undefined,
@@ -1341,14 +1340,14 @@ export class AgentRuntime {
 		);
 	}
 
-	private isAbortError(error: unknown): boolean {
+	protected isAbortError(error: unknown): boolean {
 		return (
 			error instanceof AgentRuntimeAbortError ||
 			this.abortController?.signal.aborted === true
 		);
 	}
 
-	private captureUnexpectedReasoningTokens(
+	protected captureUnexpectedReasoningTokens(
 		request: AgentModelRequest,
 		metrics: NonNullable<AgentMessage["metrics"]>,
 	): void {
@@ -1497,7 +1496,7 @@ export class AgentRuntime {
 	 * prepareToolExecution() and executePreparedTool() are still available.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private async executeToolCalls(
+	public async executeToolCalls(
 		_toolCalls: AgentToolCallPart[],
 	): Promise<AgentMessage[]> {
 		// TODO: Replace with external AgentHarness implementation.
@@ -1513,7 +1512,7 @@ export class AgentRuntime {
 	 * responsible for detecting run completion via terminal tools.
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	private findCompletingToolMessage(
+	public findCompletingToolMessage(
 		_toolCalls: AgentToolCallPart[],
 		_toolMessages: AgentMessage[],
 	): AgentMessage | undefined {
@@ -1951,7 +1950,7 @@ function buildEventMetadata(event: AgentRuntimeEvent): Record<string, unknown> {
 	};
 }
 
-function mergeToolMetadata(current: unknown, patch: unknown): unknown {
+export function mergeToolMetadata(current: unknown, patch: unknown): unknown {
 	if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
 		return patch;
 	}
@@ -1964,7 +1963,7 @@ function mergeToolMetadata(current: unknown, patch: unknown): unknown {
 	};
 }
 
-function parseToolInput(assembly: PendingToolAssembly): {
+export function parseToolInput(assembly: PendingToolAssembly): {
 	input: unknown;
 	parseError?: string;
 	invalidInput: Record<string, unknown>;
@@ -2041,7 +2040,7 @@ function parseToolArguments(
 	};
 }
 
-function mergeToolInputText(current: string, incoming: string): string {
+export function mergeToolInputText(current: string, incoming: string): string {
 	if (!current) {
 		return incoming;
 	}
