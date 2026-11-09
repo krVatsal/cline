@@ -40,7 +40,7 @@ export interface TrueForgeHarnessOptions {
  */
 export class TrueForgeHarness implements AgentHarness {
 	private readonly client: TrueForge;
-	private readonly modelName: string;
+	private readonly configuredModelName?: string;
 	private readonly sessionsByConversation = new Map<string, string>();
 
 	constructor(options: TrueForgeHarnessOptions = {}) {
@@ -57,10 +57,29 @@ export class TrueForgeHarness implements AgentHarness {
 			baseUrl,
 			token,
 		});
-		this.modelName =
+		this.configuredModelName =
 			options.model ||
-			process.env.TRUEFORGE_MODEL ||
-			"moonshot/kimi-k3-fast";
+			process.env.TRUEFORGE_MODEL;
+	}
+
+	private async resolveModelName(): Promise<string> {
+		if (this.configuredModelName?.trim()) {
+			return this.configuredModelName.trim();
+		}
+		const envModel = process.env.TRUEFORGE_MODEL;
+		if (envModel?.trim()) {
+			return envModel.trim();
+		}
+		try {
+			const modelsResponse = await this.client.models.list();
+			const activeModels = modelsResponse.data ?? [];
+			if (activeModels.length > 0 && activeModels[0]?.name) {
+				return activeModels[0].name;
+			}
+		} catch (error) {
+			console.warn("[TrueForgeHarness] Could not query active models list from TrueForge:", error);
+		}
+		return "groq/llama-3-3-70b-versatile";
 	}
 
 	public async run(
@@ -79,12 +98,14 @@ export class TrueForgeHarness implements AgentHarness {
 				(typeof ctx.config.systemPrompt === "string" ? ctx.config.systemPrompt : "") ||
 				"You are a helpful coding assistant.";
 
+			const modelName = await this.resolveModelName();
+
 			const sessionResponse = await this.client.sessions.create({
 				agent: {
 					spec: {
 						instructions: systemPrompt,
 						model: {
-							name: this.modelName,
+							name: modelName,
 						},
 					},
 				},
