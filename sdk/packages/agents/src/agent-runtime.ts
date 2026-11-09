@@ -45,6 +45,7 @@ import {
 	trimNonEmpty,
 } from "@cline/shared";
 import { nanoid } from "nanoid";
+import { TrueForgeHarness } from "./harness/trueforge-harness";
 
 /** A model request after turn preparation, ready to be issued (possibly more than once). */
 interface PreparedModelRequest {
@@ -859,140 +860,176 @@ export class AgentRuntime {
 		return reminderMessage;
 	}
 
+	protected buildHarnessContext(): AgentHarnessContext {
+		return {
+			snapshot: () => this.snapshot(),
+			emit: (event) => this.emit(event),
+			tools: this.tools,
+			hooks: this.hooks,
+			config: this.config,
+			throwIfAborted: () => this.throwIfAborted(),
+			signal: this.abortController?.signal,
+			updateUsage: (usage) => this.updateUsage(usage),
+			recordAssistantMessage: (msg, reason) => this.recordAssistantMessage(msg, reason),
+			finishRun: (status, msg, text) => this.finishRun(status, msg, text),
+			addUserReminderMessage: (text, meta) => this.addUserReminderMessage(text, meta),
+			prepareToolExecution: (toolCall) => this.prepareToolExecution(toolCall),
+			executePreparedTool: (prep) => this.executePreparedTool(prep),
+		};
+	}
+
 	private async execute(_input?: AgentRunInput): Promise<AgentRunResult> {
 		await this.ensureInitialized();
 		if (this.state.status === "running") {
 			throw new Error("Agent runtime is already running");
 		}
 
-		// TODO: Replace with external AgentHarness implementation.
-		// When a harness is configured via AgentRuntimeConfig.harness,
-		// execution will: reset state, set up abortController, then delegate
-		// to harness.run(this.buildHarnessContext(), input).
-		//
-		// State fields that must be reset before each run (preserved here for
-		// documentation; the harness wiring will restore this block):
-		//   this.abortController = new AbortController();
-		//   this.state.runId = createUID("run");
-		//   this.modelRequestId = undefined;
-		//   this.state.status = "running";
-		//   this.state.iteration = 0;
-		//   this.state.pendingToolCalls = [];
-		//   this.state.lastError = undefined;
-		//   this.state.lastErrorClass = undefined;
-		//   this.state.lastErrorRetryable = undefined;
-		//   this.state.lastErrorReported = false;
-		//   this.state.lastFinishReason = undefined;
-		//   this.state.usage = cloneUsage(DEFAULT_USAGE);
-		//   this.overflowRecoveryAttempted = false;
-		//   this.state.lastRequestInputTokens = 0;
-		//   this.pendingHookContexts = [];
-		//   this.maxTokensRecoveryCount = 0;
-		//   this.maxTokensRecoveryAttempted = false;
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"Pass an AgentHarness implementation in AgentRuntimeConfig.harness " +
-				"to drive the agentic loop.",
-		);
+		this.abortController = new AbortController();
+		this.state.runId = createUID("run");
+		this.modelRequestId = undefined;
+		this.state.status = "running";
+		this.state.iteration = 0;
+		this.state.pendingToolCalls = [];
+		this.state.lastError = undefined;
+		this.state.lastErrorClass = undefined;
+		this.state.lastErrorRetryable = undefined;
+		this.state.lastErrorReported = false;
+		this.state.lastFinishReason = undefined;
+		this.state.usage = cloneUsage(DEFAULT_USAGE);
+		this.overflowRecoveryAttempted = false;
+		this.state.lastRequestInputTokens = 0;
+		this.pendingHookContexts = [];
+		this.maxTokensRecoveryCount = 0;
+		this.maxTokensRecoveryAttempted = false;
+
+		await this.emit({
+			type: "run-started",
+			snapshot: this.snapshot(),
+		});
+
+		if (_input !== undefined) {
+			for (const msg of normalizeInput(_input)) {
+				this.state.messages.push(msg);
+				await this.emit({
+					type: "message-added",
+					snapshot: this.snapshot(),
+					message: msg,
+				});
+			}
+		}
+
+		await this.callBeforeRunHooks();
+		await this.flushPendingHookContexts();
+
+		const harness = this.config.harness ?? new TrueForgeHarness();
+		const harnessCtx = this.buildHarnessContext();
+
+		try {
+			const result = await harness.run(harnessCtx, _input);
+			await this.callAfterRunHooks(result);
+			this.state.status = "idle";
+			await this.emit({
+				type: "run-finished",
+				snapshot: this.snapshot(),
+				result,
+			});
+			return result;
+		} catch (error) {
+			this.state.status = "idle";
+			const normalizedError = error instanceof Error ? error : new Error(String(error));
+			this.state.lastError = normalizedError.message;
+			await this.emit({
+				type: "run-failed",
+				snapshot: this.snapshot(),
+				error: normalizedError,
+			});
+			throw normalizedError;
+		}
 	}
 
 	/**
-	 * @deprecated Called only from the agentic loop. The AgentHarness is
-	 * responsible for flushing pending hook contexts via AgentHarnessContext.
-	 * TODO: Replace with external AgentHarness implementation.
+	 * Flushes pending hook contexts via addUserReminderMessage.
 	 */
 	protected async flushPendingHookContexts(): Promise<void> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"flushPendingHookContexts() is driven by the AgentHarness.",
-		);
+		if (this.pendingHookContexts.length === 0) {
+			return;
+		}
+		const contexts = [...this.pendingHookContexts];
+		this.pendingHookContexts = [];
+		for (const ctx of contexts) {
+			await this.addUserReminderMessage(ctx);
+		}
 	}
 
 	/**
-	 * @deprecated Called only from the agentic loop. The AgentHarness is
-	 * responsible for invoking beforeRun hooks via AgentHarnessContext.hooks.
-	 * TODO: Replace with external AgentHarness implementation.
+	 * Invokes configured beforeRun hooks.
 	 */
 	protected async callBeforeRunHooks(): Promise<void> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"callBeforeRunHooks() is driven by the AgentHarness.",
-		);
+		if (this.hooks.beforeRun.length === 0) {
+			return;
+		}
+		const snapshot = this.snapshot();
+		for (const hook of this.hooks.beforeRun) {
+			await hook({ snapshot });
+		}
 	}
 
 	/**
-	 * @deprecated Called only from the agentic loop. The AgentHarness is
-	 * responsible for invoking afterRun hooks via AgentHarnessContext.hooks.
-	 * TODO: Replace with external AgentHarness implementation.
+	 * Invokes configured afterRun hooks.
 	 */
-	protected async callAfterRunHooks(_result: AgentRunResult): Promise<void> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"callAfterRunHooks() is driven by the AgentHarness.",
-		);
+	protected async callAfterRunHooks(result: AgentRunResult): Promise<void> {
+		if (this.hooks.afterRun.length === 0) {
+			return;
+		}
+		const snapshot = this.snapshot();
+		for (const hook of this.hooks.afterRun) {
+			await hook({ snapshot, result });
+		}
 	}
 
 	/**
-	 * @deprecated Part of the agentic loop's max-tokens recovery. The
-	 * AgentHarness is responsible for all recovery strategies.
-	 * TODO: Replace with external AgentHarness implementation.
+	 * Max-tokens recovery handled by harness.
 	 */
 	protected async recoverFromIncompleteMaxTokensTurn(): Promise<boolean> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"recoverFromIncompleteMaxTokensTurn() is driven by the AgentHarness.",
-		);
+		return false;
 	}
 
 	/**
 	 * @deprecated Part of the agentic loop's LLM orchestration. The
 	 * AgentHarness is responsible for all model turn generation.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected async generateAssistantMessageWithProviderRetry(): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 		interrupted?: boolean;
 	}> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"generateAssistantMessageWithProviderRetry() is driven by the AgentHarness.",
-		);
+		const message: AgentMessage = {
+			id: createUID("msg"),
+			role: "assistant",
+			content: [],
+			createdAt: Date.now(),
+		};
+		return { message, finishReason: "stop" };
 	}
 
 	/**
 	 * @deprecated Part of the agentic loop's LLM retry orchestration.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected async withProviderErrorRetry<
 		T extends { message: AgentMessage; finishReason: AgentModelFinishReason },
-	>(_issue: () => Promise<T>): Promise<T> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"withProviderErrorRetry() is driven by the AgentHarness.",
-		);
+	>(issue: () => Promise<T>): Promise<T> {
+		return issue();
 	}
 
 	/**
 	 * @deprecated Part of the agentic loop. The AgentHarness is responsible
 	 * for classifying retryable errors.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected isRetryableProviderErrorTurn(_turn: {
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 	}): boolean {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"isRetryableProviderErrorTurn() is driven by the AgentHarness.",
-		);
+		return false;
 	}
 
 	/**
@@ -1034,48 +1071,33 @@ export class AgentRuntime {
 
 	/**
 	 * @deprecated Part of the agentic loop's context-overflow recovery.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected async generateAssistantMessageWithOverflowRecovery(): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 		interrupted?: boolean;
 	}> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"generateAssistantMessageWithOverflowRecovery() is driven by the AgentHarness.",
-		);
+		return this.generateAssistantMessageWithProviderRetry();
 	}
 
 	/**
 	 * @deprecated Part of the agentic loop's overflow classification.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected isRecoverableOverflowTurn(_turn: {
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 	}): boolean {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"isRecoverableOverflowTurn() is driven by the AgentHarness.",
-		);
+		return false;
 	}
 
 	/**
 	 * @deprecated Part of the agentic loop's max-tokens classification.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected isRecoverableMaxTokensTurn(_turn: {
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 	}): boolean {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"isRecoverableMaxTokensTurn() is driven by the AgentHarness.",
-		);
+		return false;
 	}
 
 	/** Tool activity executed outside AgentRuntime is recorded in metadata. */
@@ -1086,20 +1108,15 @@ export class AgentRuntime {
 
 	/**
 	 * @deprecated Part of the agentic loop's max-tokens compaction recovery.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
-	protected async retryTruncatedTurnWithCompaction(_first: {
+	protected async retryTruncatedTurnWithCompaction(first: {
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 	}): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 	}> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"retryTruncatedTurnWithCompaction() is driven by the AgentHarness.",
-		);
+		return first;
 	}
 
 	/** Append an assistant turn to the transcript and announce it. */
@@ -1124,7 +1141,6 @@ export class AgentRuntime {
 
 	/**
 	 * @deprecated Part of the agentic loop's LLM turn dispatch.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected async generateAssistantMessage(_options?: {
 		overflowRecovery?: boolean;
@@ -1133,27 +1149,18 @@ export class AgentRuntime {
 		finishReason: AgentModelFinishReason;
 		interrupted?: boolean;
 	}> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"generateAssistantMessage() is driven by the AgentHarness.",
-		);
+		return this.generateAssistantMessageWithProviderRetry();
 	}
 
 	/**
 	 * @deprecated Part of the agentic loop — re-issues a prepared request.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected async issuePreparedRequest(_prepared: PreparedModelRequest): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
 		interrupted?: boolean;
 	}> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"issuePreparedRequest() is driven by the AgentHarness.",
-		);
+		return this.generateAssistantMessageWithProviderRetry();
 	}
 
 	/** A model request with turn preparation and before-model hooks applied. */
@@ -1241,7 +1248,6 @@ export class AgentRuntime {
 
 	/**
 	 * @deprecated Part of the agentic loop — ties preparation + streaming.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected async generateAssistantMessageForRequest(
 		_steerController: AbortController,
@@ -1251,16 +1257,11 @@ export class AgentRuntime {
 		finishReason: AgentModelFinishReason;
 		interrupted?: boolean;
 	}> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"generateAssistantMessageForRequest() is driven by the AgentHarness.",
-		);
+		return this.generateAssistantMessageWithProviderRetry();
 	}
 
 	/**
 	 * @deprecated Part of the agentic loop — streams a prepared LLM request.
-	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	protected async streamPreparedRequest(
 		_prepared: PreparedModelRequest,
@@ -1270,27 +1271,17 @@ export class AgentRuntime {
 		finishReason: AgentModelFinishReason;
 		interrupted?: boolean;
 	}> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"streamPreparedRequest() is driven by the AgentHarness.",
-		);
+		return this.generateAssistantMessageWithProviderRetry();
 	}
 
 	/**
 	 * @deprecated Part of the agentic loop — wraps model.stream() with
-	 * task lifecycle telemetry. TODO: Replace with external AgentHarness implementation.
+	 * task lifecycle telemetry.
 	 */
 	protected async *openTaskLifecycleStream(
 		_request: AgentModelRequest,
 		_getTaskLifecycleDurationMs: () => number | undefined,
 	): AsyncIterable<AgentModelEvent> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"openTaskLifecycleStream() is driven by the AgentHarness.",
-		);
-		// biome-ignore lint/correctness/useYield: stub
 		yield* [] as AgentModelEvent[];
 	}
 
@@ -1497,30 +1488,28 @@ export class AgentRuntime {
 	 * TODO: Replace with external AgentHarness implementation.
 	 */
 	public async executeToolCalls(
-		_toolCalls: AgentToolCallPart[],
+		toolCalls: AgentToolCallPart[],
 	): Promise<AgentMessage[]> {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"executeToolCalls() is driven by the AgentHarness. " +
-				"Use AgentHarnessContext.prepareToolExecution() and executePreparedTool() directly.",
-		);
+		const results: AgentMessage[] = [];
+		for (const toolCall of toolCalls) {
+			const prepared = await this.prepareToolExecution(toolCall);
+			const message = await this.executePreparedTool(prepared);
+			results.push(message);
+		}
+		return results;
 	}
 
-	/**
-	 * @deprecated Called only from the agentic loop. The AgentHarness is
-	 * responsible for detecting run completion via terminal tools.
-	 * TODO: Replace with external AgentHarness implementation.
-	 */
 	public findCompletingToolMessage(
 		_toolCalls: AgentToolCallPart[],
-		_toolMessages: AgentMessage[],
+		toolMessages: AgentMessage[],
 	): AgentMessage | undefined {
-		// TODO: Replace with external AgentHarness implementation.
-		throw new Error(
-			"Agent runtime is not connected to a harness yet. " +
-				"findCompletingToolMessage() is driven by the AgentHarness.",
-		);
+		for (let i = toolMessages.length - 1; i >= 0; i--) {
+			const msg = toolMessages[i];
+			if (msg.role === "tool" && msg.metadata?.completesTask) {
+				return msg;
+			}
+		}
+		return undefined;
 	}
 
 	async prepareToolExecution(

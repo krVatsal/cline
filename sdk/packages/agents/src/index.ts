@@ -59,3 +59,4 @@ export {
 	createAgent,
 	createAgentRuntime,
 } from "./agent-runtime";
+export { TrueForgeHarness, type TrueForgeHarnessOptions } from "./harness/index";
