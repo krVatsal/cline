@@ -94,6 +94,7 @@ export async function createHookTestEnv(): Promise<HookTestEnv> {
 
 	const sandbox = sinon.createSandbox()
 	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "hook-test-"))
+	await fs.writeFile(path.join(tempDir, "package.json"), JSON.stringify({ type: "commonjs" }))
 	const hooksDir = await createHooksDirectory(tempDir)
 
 	stubWorkspacePaths(sandbox, [tempDir])
@@ -127,6 +128,7 @@ export async function createHookTestEnv(): Promise<HookTestEnv> {
 export async function createHooksDirectory(baseDir: string): Promise<string> {
 	const hooksDir = path.join(baseDir, ".clinerules", "hooks")
 	await fs.mkdir(hooksDir, { recursive: true })
+	await fs.writeFile(path.join(hooksDir, "package.json"), JSON.stringify({ type: "commonjs" }))
 	return hooksDir
 }
 

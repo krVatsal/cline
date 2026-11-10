@@ -23,8 +23,8 @@ export interface TrueForgeHarnessOptions {
 	 */
 	token?: string;
 	/**
-	 * Default model name (e.g. "moonshot/kimi-k3-fast").
-	 * Defaults to `process.env.TRUEFORGE_MODEL` or "moonshot/kimi-k3-fast".
+	 * Default model name (e.g. "groq/openai-gpt-oss-120b").
+	 * Defaults to `process.env.TRUEFORGE_MODEL` or "groq/openai-gpt-oss-120b".
 	 */
 	model?: string;
 }
@@ -73,13 +73,18 @@ export class TrueForgeHarness implements AgentHarness {
 		try {
 			const modelsResponse = await this.client.models.list();
 			const activeModels = modelsResponse.data ?? [];
+			// Prefer Groq models (e.g. groq/openai-gpt-oss-120b)
+			const groqModel = activeModels.find((m) => m.name?.startsWith("groq/"));
+			if (groqModel?.name) {
+				return groqModel.name;
+			}
 			if (activeModels.length > 0 && activeModels[0]?.name) {
 				return activeModels[0].name;
 			}
 		} catch (error) {
 			console.warn("[TrueForgeHarness] Could not query active models list from TrueForge:", error);
 		}
-		return "groq/llama-3-3-70b-versatile";
+		return "groq/openai-gpt-oss-120b";
 	}
 
 	public async run(
