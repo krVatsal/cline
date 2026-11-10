@@ -99,15 +99,15 @@ const ACT_MODE_COLOR = "var(--vscode-focusBorder)"
 const SwitchContainer = styled.div`
 	display: flex;
 	align-items: center;
-	background-color: transparent;
-	border: 1px solid var(--vscode-input-border);
-	border-radius: 12px;
+	background-color: rgba(255, 255, 255, 0.04);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 9999px;
 	overflow: hidden;
 	cursor: pointer;
 	transform: scale(1);
 	transform-origin: right center;
 	margin-left: 0;
-	user-select: none; // Prevent text selection
+	user-select: none;
 `
 
 const Slider = styled.div.withConfig({
@@ -116,8 +116,10 @@ const Slider = styled.div.withConfig({
 	position: absolute;
 	height: 100%;
 	width: 50%;
-	background-color: ${(props) => (props.isPlan ? PLAN_MODE_COLOR : ACT_MODE_COLOR)};
-	transition: transform 0.2s ease;
+	background: ${(props) => (props.isPlan ? "linear-gradient(135deg, #f59e0b, #d97706)" : "linear-gradient(135deg, #06b6d4, #3b82f6)")};
+	border-radius: 9999px;
+	box-shadow: 0 0 10px rgba(6, 182, 212, 0.35);
+	transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 	transform: translateX(${(props) => (props.isAct ? "100%" : "0%")});
 `
 
@@ -153,24 +155,31 @@ const ModelButtonWrapper = styled.div`
 `
 
 const ModelDisplayButton = styled.a<{ isActive?: boolean; disabled?: boolean }>`
-	padding: 0px 0px;
+	padding: 1px 8px;
 	height: 20px;
 	width: 100%;
 	min-width: 0;
 	cursor: ${(props) => (props.disabled ? "not-allowed" : "pointer")};
-	text-decoration: ${(props) => (props.isActive ? "underline" : "none")};
+	text-decoration: none;
 	color: ${(props) => (props.isActive ? "var(--vscode-foreground)" : "var(--vscode-descriptionForeground)")};
-	display: flex;
+	display: inline-flex;
 	align-items: center;
-	font-size: 10px;
+	font-size: 11px;
 	outline: none;
 	user-select: none;
 	opacity: ${(props) => (props.disabled ? 0.5 : 1)};
 	pointer-events: ${(props) => (props.disabled ? "none" : "auto")};
+	border-radius: 9999px;
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	background: rgba(255, 255, 255, 0.03);
+	transition: all 0.15s ease;
 
 	&:hover,
 	&:focus {
-		color: ${(props) => (props.disabled ? "var(--vscode-descriptionForeground)" : "var(--vscode-foreground)")};
+		color: var(--vscode-foreground);
+		background: rgba(255, 255, 255, 0.08);
+		border-color: rgba(255, 255, 255, 0.18);
+	}
 		text-decoration: ${(props) => (props.disabled ? "none" : "underline")};
 		outline: none;
 	}
@@ -1610,14 +1619,20 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						style={{ height: textAreaBaseHeight }}>
 						<div className="flex flex-row items-center">
 							<div
-								className={cn("input-icon-button", { disabled: sendingDisabled }, "codicon codicon-send text-sm")}
+								className={cn(
+									"flex items-center justify-center size-6 rounded-md transition-all cursor-pointer",
+									sendingDisabled
+										? "opacity-30 cursor-not-allowed text-muted-foreground"
+										: "bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-[0_0_10px_rgba(6,182,212,0.4)] hover:brightness-110 active:scale-95",
+								)}
 								data-testid="send-button"
 								onClick={() => {
 									if (!sendingDisabled) {
 										onSend()
 									}
-								}}
-							/>
+								}}>
+								<span className="codicon codicon-arrow-up text-sm font-bold" />
+							</div>
 						</div>
 					</div>
 				</div>

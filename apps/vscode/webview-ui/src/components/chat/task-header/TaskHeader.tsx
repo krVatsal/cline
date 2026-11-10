@@ -144,23 +144,23 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({
 	const environmentBorderColor = getEnvironmentColor(environment, "border")
 
 	return (
-		<div className="py-2 px-4 flex flex-col gap-2">
+		<div className="py-2 px-3 flex flex-col gap-2">
 			{/* Task Header */}
 			<div
 				className={cn(
-					"relative overflow-hidden cursor-pointer rounded-sm flex flex-col gap-1.5 z-10 pt-2 pb-2 px-2 hover:opacity-100 bg-(--vscode-toolbar-hoverBackground)/65",
+					"relative overflow-hidden cursor-pointer rounded-xl flex flex-col gap-1.5 z-10 pt-2.5 pb-2.5 px-3 border border-white/[0.08] bg-gradient-to-b from-white/[0.04] to-transparent backdrop-blur-md shadow-sm transition-all duration-200",
 					{
-						"opacity-100 border-1": isTaskExpanded, // No hover effects when expanded, add border
-						"hover:bg-toolbar-hover border-1": !isTaskExpanded, // Hover effects only when collapsed
+						"ring-1 ring-white/10": isTaskExpanded,
+						"hover:border-white/20 hover:bg-white/[0.06]": !isTaskExpanded,
 					},
 				)}
 				style={{
-					borderColor: environmentBorderColor,
+					borderColor: environmentBorderColor || undefined,
 				}}>
 				{/* Task Title */}
 				<div
 					aria-label={isTaskExpanded ? "Collapse task header" : "Expand task header"}
-					className="flex justify-between items-start cursor-pointer"
+					className="flex justify-between items-center cursor-pointer"
 					onClick={toggleTaskExpanded}
 					onKeyDown={(e) => {
 						if (e.key === "Enter" || e.key === " ") {
@@ -170,33 +170,32 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({
 						}
 					}}
 					tabIndex={0}>
-					<div className="flex flex-wrap gap-y-1 items-center grow min-w-0">
-						<div className="flex justify-between items-center">
-							{isTaskExpanded ? <ChevronDownIcon size="16" /> : <ChevronRightIcon size="16" />}
-							{isTaskExpanded && (
-								<div className="mt-1 flex justify-end cursor-pointer opacity-80 gap-2 mx-2">
-									<CopyTaskButton className={BUTTON_CLASS} taskText={task.text} />
-									<DeleteTaskButton
-										className={BUTTON_CLASS}
-										taskId={currentTaskItem?.id}
-										taskSize={currentTaskItem?.size}
-									/>
-									{/* Only visible in development mode */}
-									{IS_DEV && (
-										<OpenDiskConversationHistoryButton
-											className={BUTTON_CLASS}
-											taskId={currentTaskItem?.id}
-										/>
-									)}
-								</div>
-							)}
+					<div className="flex flex-wrap gap-y-1 items-center grow min-w-0 gap-2">
+						<div className="flex items-center text-muted-foreground hover:text-foreground transition-colors">
+							{isTaskExpanded ? <ChevronDownIcon size="15" /> : <ChevronRightIcon size="15" />}
 						</div>
 						{!isTaskExpanded && (
-							<div className="select-none whitespace-nowrap overflow-hidden text-ellipsis grow basis-0 min-w-16">
-								<span className="ph-no-capture text-base">{highlightedText}</span>
+							<div className="select-none whitespace-nowrap overflow-hidden text-ellipsis grow basis-0 min-w-16 font-medium text-xs text-foreground/90">
+								<span className="ph-no-capture">{highlightedText}</span>
 							</div>
 						)}
-						<div className="inline-flex flex-wrap gap-y-1 items-center justify-end select-none ml-auto min-w-0">
+						{isTaskExpanded && (
+							<div className="flex items-center gap-1.5">
+								<CopyTaskButton className="h-6 w-6 p-0 border-0 bg-transparent opacity-70 hover:opacity-100 text-foreground" taskText={task.text} />
+								<DeleteTaskButton
+									className="h-6 w-6 p-0 border-0 bg-transparent opacity-70 hover:opacity-100 text-foreground"
+									taskId={currentTaskItem?.id}
+									taskSize={currentTaskItem?.size}
+								/>
+								{IS_DEV && (
+									<OpenDiskConversationHistoryButton
+										className="h-6 w-6 p-0 border-0 bg-transparent opacity-70 hover:opacity-100 text-foreground"
+										taskId={currentTaskItem?.id}
+									/>
+								)}
+							</div>
+						)}
+						<div className="inline-flex flex-wrap gap-y-1 items-center justify-end select-none ml-auto min-w-0 gap-1.5">
 							{currentCloudTask ? (
 								<CloudTaskBadge cloudTask={currentCloudTask} />
 							) : (
@@ -208,14 +207,14 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({
 							)}
 							{isCostAvailable && (
 								<div
-									className="mx-1 px-1 py-0.25 rounded-full inline-flex shrink-0 text-badge-background bg-badge-foreground/80 items-center"
+									className="px-2 py-0.5 rounded-full inline-flex shrink-0 text-[11px] font-mono font-medium border border-cyan-500/20 bg-cyan-500/10 text-cyan-400 items-center"
 									id="price-tag">
-									<span className="text-xs sm:text-sm">${totalCost?.toFixed(4)}</span>
+									<span>${totalCost?.toFixed(4)}</span>
 								</div>
 							)}
 						</div>
 					</div>
-					<NewTaskButton className={cn(BUTTON_CLASS, "shrink-0 mt-1")} onClick={onClose} />
+					<NewTaskButton className="h-6 w-6 p-0 border-0 bg-transparent opacity-70 hover:opacity-100 text-foreground ml-1" onClick={onClose} />
 				</div>
 
 				{/* Expand/Collapse Task Details */}

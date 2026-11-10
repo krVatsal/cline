@@ -112,7 +112,7 @@
 				{
 					"id": "claude-dev-ActivityBar",
 					"title": "Zentrix",
-					"icon": "assets/icons/icon.svg"
+					"icon": "assets/icons/activitybar.svg"
 				}
 			]
 		},
@@ -122,7 +122,7 @@
 					"type": "webview",
 					"id": "claude-dev.SidebarProvider",
 					"name": "",
-					"icon": "assets/icons/icon.svg"
+					"icon": "assets/icons/activitybar.svg"
 				}
 			]
 		},

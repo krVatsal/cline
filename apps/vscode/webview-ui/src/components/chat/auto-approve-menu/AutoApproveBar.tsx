@@ -62,37 +62,13 @@ const AutoApproveBar = ({ style }: AutoApproveBarProps) => {
 
 	return (
 		<div
-			className="mx-3.5 select-none break-words relative"
+			className="mx-3.5 mb-1 select-none break-words relative rounded-lg border border-white/[0.08] bg-white/[0.03] backdrop-blur-sm transition-colors hover:border-white/15"
 			style={{
-				borderTop: `0.5px solid ${borderColor}`,
-				borderRadius: "4px 4px 0 0",
-				background: bgGradient,
 				...style,
 			}}>
-			{/* Left border gradient */}
-			<div
-				className="absolute left-0 pointer-events-none"
-				style={{
-					width: 0.5,
-					top: 3,
-					height: "100%",
-					background: borderGradient,
-				}}
-			/>
-			{/* Right border gradient */}
-			<div
-				className="absolute right-0 top-0 pointer-events-none"
-				style={{
-					width: 0.5,
-					top: 3,
-					height: "100%",
-					background: borderGradient,
-				}}
-			/>
-
 			<div
 				aria-label={isModalVisible ? "Close auto-approve settings" : "Open auto-approve settings"}
-				className="group cursor-pointer pt-3 pb-3.5 pr-2 px-3.5 flex items-center justify-between gap-0"
+				className="group cursor-pointer py-1.5 px-3 flex items-center justify-between text-xs"
 				onClick={() => {
 					setIsModalVisible((prev) => !prev)
 				}}
@@ -105,11 +81,13 @@ const AutoApproveBar = ({ style }: AutoApproveBarProps) => {
 				}}
 				ref={buttonRef}
 				tabIndex={0}>
-				<div className="flex flex-nowrap items-center gap-1 min-w-0 flex-1">
-					<span className="whitespace-nowrap">Auto-approve:</span>
+				<div className="flex flex-nowrap items-center gap-1.5 min-w-0 flex-1 text-xs">
+					<span className="font-medium text-foreground/80 flex items-center gap-1">
+						<span className="text-cyan-400">⚡</span> Auto-Approve:
+					</span>
 					{getEnabledActionsText()}
 				</div>
-				{isModalVisible ? <ChevronDownIcon size={16} /> : <ChevronRightIcon size={16} />}
+				{isModalVisible ? <ChevronDownIcon className="text-muted-foreground" size={14} /> : <ChevronRightIcon className="text-muted-foreground" size={14} />}
 			</div>
 
 			<AutoApproveModal

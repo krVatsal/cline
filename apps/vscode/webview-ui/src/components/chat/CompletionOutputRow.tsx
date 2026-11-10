@@ -68,12 +68,15 @@ export const CompletionOutputRow = memo(
 		}, [showViewChanges])
 
 		return (
-			<div className="rounded-sm border border-success/20 overflow-visible bg-success/10">
-				<div className="flex items-center justify-between gap-2 pl-2 pr-1 pt-1 -mb-1.5">
-					<span className="text-xs font-medium uppercase tracking-wider text-success/70">Completed</span>
-					<CopyButton ariaLabel="Copy response" className="text-success/70" textToCopy={text} />
+			<div className="rounded-xl border border-emerald-500/25 overflow-visible bg-gradient-to-b from-emerald-500/[0.08] via-emerald-500/[0.03] to-transparent shadow-sm backdrop-blur-sm transition-all my-2">
+				<div className="flex items-center justify-between gap-2 px-3 pt-2.5 pb-1">
+					<div className="flex items-center gap-1.5">
+						<span className="inline-block size-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
+						<span className="text-[11px] font-semibold tracking-wide uppercase text-emerald-400">Zentrix Completed</span>
+					</div>
+					<CopyButton ariaLabel="Copy response" className="text-emerald-400/80 hover:text-emerald-300" textToCopy={text} />
 				</div>
-				<div className="completion-output-content relative p-2 w-full [&_hr]:opacity-20 [&_p:last-child]:mb-0 rounded-sm">
+				<div className="completion-output-content relative px-3 py-2 w-full [&_hr]:opacity-20 [&_p:last-child]:mb-0 rounded-b-xl text-foreground text-sm leading-relaxed">
 					<MarkdownRow markdown={text} />
 					{quoteButtonState.visible && (
 						<QuoteButton left={quoteButtonState.left} onClick={handleQuoteClick} top={quoteButtonState.top} />

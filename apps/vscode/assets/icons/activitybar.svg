@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none">
+  <!-- Zentrix Geometric Monomark for Activity Bar -->
+  <!-- Top Segment -->
+  <path d="M4 5 H19 C19.6 5 20 5.6 19.6 6.1 L15.5 11 H9 C8.4 11 8 10.6 8 10 L7 6 C7 5.4 6.6 5 6 5 Z" fill="currentColor" opacity="0.9"/>
+  <!-- Diagonal Beam -->
+  <polygon points="17,6.5 6.5,18 9,18 19.5,7.5 19.5,6.5" fill="currentColor"/>
+  <!-- Bottom Segment -->
+  <path d="M20 19 H5 C4.4 19 4 18.4 4.4 17.9 L8.5 13 H15 C15.6 13 16 13.4 16 14 L17 18 C17 18.6 17.4 19 18 19 Z" fill="currentColor" opacity="0.9"/>
+  <!-- Core Dot -->
+  <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+</svg>

@@ -155,8 +155,8 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 
 	return (
 		<div
-			className={`group relative p-2.5 my-1 text-badge-foreground rounded-xs ${
-				messageTs && !isEditing ? "cursor-pointer pr-8" : ""
+			className={`group relative p-3 my-2 text-foreground rounded-xl border border-sky-500/25 bg-gradient-to-br from-sky-500/15 via-indigo-500/10 to-transparent shadow-sm backdrop-blur-sm transition-all duration-150 ${
+				messageTs && !isEditing ? "cursor-pointer pr-8 hover:border-sky-500/40 hover:shadow" : ""
 			}`}
 			onClick={messageTs && !isEditing ? startEditing : undefined}
 			onKeyDown={
@@ -171,7 +171,6 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 			}
 			role={messageTs && !isEditing ? "button" : undefined}
 			style={{
-				backgroundColor: "var(--vscode-badge-background)",
 				whiteSpace: "pre-line",
 				wordWrap: "break-word",
 			}}
@@ -183,7 +182,7 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 					<TooltipTrigger asChild>
 						<button
 							aria-label="Edit and regenerate from this message"
-							className="absolute right-1.5 top-1.5 opacity-0 group-hover:opacity-80 hover:opacity-100 bg-transparent border-0 text-badge-foreground cursor-pointer p-1"
+							className="absolute right-2 top-2 opacity-0 group-hover:opacity-80 hover:opacity-100 bg-transparent border-0 text-muted-foreground hover:text-foreground cursor-pointer p-1 transition-opacity"
 							onClick={(event) => {
 								event.stopPropagation()
 								startEditing()
