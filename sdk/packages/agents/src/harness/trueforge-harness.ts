@@ -216,79 +216,39 @@ export class TrueForgeHarness implements AgentHarness {
 		}
 
 		// 3. Initiate turn streaming from TrueForge
-		const stream = await this.withClient((c) =>
-			c.sessions.createTurnStream(sessionId, {
-				input: [
-					{
-						type: "user.message",
-						content: promptText,
-					},
-				],
-			}),
-		);
+		try {
+			const stream = await this.withClient((c) =>
+				c.sessions.createTurnStream(sessionId, {
+					input: [
+						{
+							type: "user.message",
+							content: promptText,
+						},
+					],
+				}),
+			);
 
-		let accumulatedText = "";
-		let accumulatedReasoning = "";
-		const finishReason: AgentModelFinishReason = "stop";
+			let accumulatedText = "";
+			let accumulatedReasoning = "";
+			const finishReason: AgentModelFinishReason = "stop";
 
-		for await (const event of stream) {
-			ctx.throwIfAborted();
+			const handleToolCalls = async (toolCalls: any[]) => {
+				if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
+				for (const tc of toolCalls) {
+					const fnName = tc.function?.name || tc.toolInfo?.name || tc.name;
+					const fnArgs = tc.function?.arguments || tc.arguments;
+					let parsedArgs: any = {};
+					try {
+						parsedArgs = typeof fnArgs === "string" ? JSON.parse(fnArgs) : fnArgs;
+					} catch {}
 
-			if (event.type === "model.message.delta") {
-				// Handle streaming reasoning (thinking) content from Groq/Qwen/GPT-OSS
-				const reasoning = (event as any).reasoningContent;
-				if (reasoning) {
-					accumulatedReasoning += reasoning;
-					await ctx.emit({
-						type: "assistant-reasoning-delta",
-						snapshot: ctx.snapshot(),
-						iteration: ctx.snapshot().iteration,
-						text: reasoning,
-						accumulatedText: accumulatedReasoning,
-					});
-				}
-
-				const delta = event.content ?? "";
-				if (delta) {
-					accumulatedText += delta;
-					await ctx.emit({
-						type: "assistant-text-delta",
-						snapshot: ctx.snapshot(),
-						iteration: ctx.snapshot().iteration,
-						text: delta,
-						accumulatedText,
-					});
-				}
-			} else if (event.type === "model.message") {
-				const content = (event as any).content;
-				if (content && !accumulatedText) {
-					accumulatedText = content;
-					await ctx.emit({
-						type: "assistant-text-delta",
-						snapshot: ctx.snapshot(),
-						iteration: ctx.snapshot().iteration,
-						text: content,
-						accumulatedText,
-					});
-				}
-
-				// Handle tool calls if emitted by the model
-				const toolCalls = (event as any).toolCalls;
-				if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-					for (const tc of toolCalls) {
-						const fnName = tc.function?.name || tc.toolInfo?.name || tc.name;
-						const fnArgs = tc.function?.arguments || tc.arguments;
-						let parsedArgs: any = {};
-						try {
-							parsedArgs = typeof fnArgs === "string" ? JSON.parse(fnArgs) : fnArgs;
-						} catch {}
-
-						if (fnName === "ask_user_question") {
-							const question = parsedArgs?.question || "Please clarify:";
-							const options = Array.isArray(parsedArgs?.options)
-								? parsedArgs.options.map((opt: string) => `• ${opt}`).join("\n")
-								: "";
-							const formatted = `\n\n**${question}**\n\n${options}\n`;
+					if (fnName === "ask_user_question") {
+						const question = parsedArgs?.question || "Please clarify:";
+						const options = Array.isArray(parsedArgs?.options)
+							? parsedArgs.options.map((opt: string) => `• ${opt}`).join("\n")
+							: "";
+						const formatted = `\n\n**${question}**\n\n${options}\n`;
+						if (!accumulatedText.includes(question)) {
 							accumulatedText += formatted;
 							await ctx.emit({
 								type: "assistant-text-delta",
@@ -297,102 +257,144 @@ export class TrueForgeHarness implements AgentHarness {
 								text: formatted,
 								accumulatedText,
 							});
-						} else if (fnName === "run_commands" || fnName === "execute_command") {
-							const cmds = parsedArgs?.commands || (parsedArgs?.command ? [parsedArgs.command] : []);
-							const cmdText = cmds.length > 0 ? `\n\n\`\`\`bash\n${cmds.join("\n")}\n\`\`\`\n` : "";
-							if (cmdText && !accumulatedText.includes(cmds[0])) {
-								accumulatedText += cmdText;
-								await ctx.emit({
-									type: "assistant-text-delta",
-									snapshot: ctx.snapshot(),
-									iteration: ctx.snapshot().iteration,
-									text: cmdText,
-									accumulatedText,
-								});
-							}
+						}
+					} else if (fnName === "run_commands" || fnName === "execute_command") {
+						const cmds = parsedArgs?.commands || (parsedArgs?.command ? [parsedArgs.command] : []);
+						const cmdText = cmds.length > 0 ? `\n\n\`\`\`bash\n${cmds.join("\n")}\n\`\`\`\n` : "";
+						if (cmdText && !accumulatedText.includes(cmds[0])) {
+							accumulatedText += cmdText;
+							await ctx.emit({
+								type: "assistant-text-delta",
+								snapshot: ctx.snapshot(),
+								iteration: ctx.snapshot().iteration,
+								text: cmdText,
+								accumulatedText,
+							});
 						}
 					}
 				}
-			} else if (event.type === "turn.done") {
-				const output = (event as any).state?.output;
-				if (output?.content && !accumulatedText) {
-					accumulatedText = output.content;
-					await ctx.emit({
-						type: "assistant-text-delta",
-						snapshot: ctx.snapshot(),
-						iteration: ctx.snapshot().iteration,
-						text: accumulatedText,
-						accumulatedText,
-					});
-				}
+			};
 
-				const toolCalls = output?.toolCalls;
-				if (Array.isArray(toolCalls) && toolCalls.length > 0 && !accumulatedText) {
-					for (const tc of toolCalls) {
-						const fnName = tc.function?.name || tc.name;
-						if (fnName === "ask_user_question") {
-							try {
-								const args = JSON.parse(tc.function?.arguments || "{}");
-								const question = args.question || "Please clarify:";
-								const options = Array.isArray(args.options) ? args.options.map((o: string) => `• ${o}`).join("\n") : "";
-								accumulatedText = `**${question}**\n\n${options}`;
-								await ctx.emit({
-									type: "assistant-text-delta",
-									snapshot: ctx.snapshot(),
-									iteration: ctx.snapshot().iteration,
-									text: accumulatedText,
-									accumulatedText,
-								});
-							} catch {}
-						}
+			for await (const event of stream) {
+				ctx.throwIfAborted();
+
+				if (event.type === "model.message.delta") {
+					// Handle streaming reasoning (thinking) content from Groq/Qwen/GPT-OSS
+					const reasoning = (event as any).reasoningContent;
+					if (reasoning) {
+						accumulatedReasoning += reasoning;
+						await ctx.emit({
+							type: "assistant-reasoning-delta",
+							snapshot: ctx.snapshot(),
+							iteration: ctx.snapshot().iteration,
+							text: reasoning,
+							accumulatedText: accumulatedReasoning,
+						});
 					}
-				}
 
-				if (event.state && "metrics" in event.state && event.state.metrics) {
-					const metrics = event.state.metrics as {
-						totalInputTokens?: number;
-						totalOutputTokens?: number;
-						totalTokens?: number;
-					};
-					const usage: Partial<AgentUsage> = {
-						inputTokens: metrics.totalInputTokens ?? 0,
-						outputTokens: metrics.totalOutputTokens ?? 0,
-					};
-					await ctx.updateUsage(usage);
-				}
+					const delta = event.content ?? "";
+					if (delta) {
+						accumulatedText += delta;
+						await ctx.emit({
+							type: "assistant-text-delta",
+							snapshot: ctx.snapshot(),
+							iteration: ctx.snapshot().iteration,
+							text: delta,
+							accumulatedText,
+						});
+					}
 
-				if (event.state && event.state.status === "error") {
-					throw new Error(event.state.message || "TrueForge turn failed");
+					// Handle tool calls in deltas
+					const toolCalls = (event as any).toolCalls;
+					if (toolCalls) {
+						await handleToolCalls(toolCalls);
+					}
+				} else if (event.type === "model.message") {
+					const content = (event as any).content;
+					if (content && !accumulatedText) {
+						accumulatedText = content;
+						await ctx.emit({
+							type: "assistant-text-delta",
+							snapshot: ctx.snapshot(),
+							iteration: ctx.snapshot().iteration,
+							text: content,
+							accumulatedText,
+						});
+					}
+
+					const toolCalls = (event as any).toolCalls;
+					if (toolCalls) {
+						await handleToolCalls(toolCalls);
+					}
+				} else if (event.type === "tool.response_required") {
+					const toolCalls = (event as any).toolCalls;
+					if (toolCalls) {
+						await handleToolCalls(toolCalls);
+					}
+				} else if (event.type === "turn.done") {
+					const output = (event as any).state?.output;
+					if (output?.content && !accumulatedText) {
+						accumulatedText = output.content;
+						await ctx.emit({
+							type: "assistant-text-delta",
+							snapshot: ctx.snapshot(),
+							iteration: ctx.snapshot().iteration,
+							text: accumulatedText,
+							accumulatedText,
+						});
+					}
+
+					const toolCalls = output?.toolCalls;
+					if (toolCalls && !accumulatedText) {
+						await handleToolCalls(toolCalls);
+					}
+
+					if (event.state && "metrics" in event.state && event.state.metrics) {
+						const metrics = event.state.metrics as {
+							totalInputTokens?: number;
+							totalOutputTokens?: number;
+							totalTokens?: number;
+						};
+						const usage: Partial<AgentUsage> = {
+							inputTokens: metrics.totalInputTokens ?? 0,
+							outputTokens: metrics.totalOutputTokens ?? 0,
+						};
+						await ctx.updateUsage(usage);
+					}
+
+					if (event.state && event.state.status === "error") {
+						throw new Error(event.state.message || "TrueForge turn failed");
+					}
 				}
 			}
-		}
 
-		// Ensure the assistant never leaves the user with an empty response
-		if (!accumulatedText.trim()) {
-			if (accumulatedReasoning.trim()) {
-				accumulatedText = accumulatedReasoning.trim();
-			} else {
+			// Ensure the assistant never leaves the user with an empty response
+			if (!accumulatedText.trim()) {
 				accumulatedText = "I'm ready to assist with your coding tasks, running commands, and workspace operations. What would you like to run or build?";
+				await ctx.emit({
+					type: "assistant-text-delta",
+					snapshot: ctx.snapshot(),
+					iteration: ctx.snapshot().iteration,
+					text: accumulatedText,
+					accumulatedText,
+				});
 			}
-			await ctx.emit({
-				type: "assistant-text-delta",
-				snapshot: ctx.snapshot(),
-				iteration: ctx.snapshot().iteration,
-				text: accumulatedText,
-				accumulatedText,
-			});
+
+			// 4. Record assistant message in transcript
+			const assistantMessage: AgentMessage = {
+				id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+				role: "assistant",
+				content: accumulatedText ? [{ type: "text", text: accumulatedText }] : [],
+				createdAt: Date.now(),
+			};
+
+			await ctx.recordAssistantMessage(assistantMessage, finishReason);
+
+			return ctx.finishRun("completed", assistantMessage, accumulatedText);
+		} catch (error: any) {
+			// In case of a session failure (e.g. 400 error), evict the cached session so next turn recovers cleanly
+			TrueForgeHarness.sessionsByConversation.delete(conversationId);
+			throw error;
 		}
-
-		// 4. Record assistant message in transcript
-		const assistantMessage: AgentMessage = {
-			id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-			role: "assistant",
-			content: accumulatedText ? [{ type: "text", text: accumulatedText }] : [],
-			createdAt: Date.now(),
-		};
-
-		await ctx.recordAssistantMessage(assistantMessage, finishReason);
-
-		return ctx.finishRun("completed", assistantMessage, accumulatedText);
 	}
 }
