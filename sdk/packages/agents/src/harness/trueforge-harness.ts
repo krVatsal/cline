@@ -42,7 +42,7 @@ export class TrueForgeHarness implements AgentHarness {
 	private readonly client: TrueForge;
 	private readonly fallbackClient?: TrueForge;
 	private readonly configuredModelName?: string;
-	private readonly sessionsByConversation = new Map<string, string>();
+	private static readonly sessionsByConversation = new Map<string, string>();
 
 	constructor(options: TrueForgeHarnessOptions = {}) {
 		const baseUrl =
@@ -135,11 +135,14 @@ export class TrueForgeHarness implements AgentHarness {
 		const conversationId = snapshot.conversationId ?? "default";
 
 		// 1. Resolve or create TrueForge session for this conversation
-		let sessionId = this.sessionsByConversation.get(conversationId);
+		let sessionId = TrueForgeHarness.sessionsByConversation.get(conversationId);
 		if (!sessionId) {
-			const systemPrompt =
+			let systemPrompt =
 				(typeof ctx.config.systemPrompt === "string" ? ctx.config.systemPrompt : "") ||
-				"You are a helpful coding assistant.";
+				"You are Zentrix, an autonomous AI software engineering assistant.";
+
+			// Ensure the model knows it is Zentrix with full execution capabilities
+			systemPrompt += "\n\n# Capabilities & Persona\nYou are Zentrix, an autonomous software engineering assistant running inside VS Code.\nYou can execute terminal commands, edit and create files, search code, and assist users with all development tasks.\nAlways answer user prompts directly, proactively, and clearly. When asked to execute commands or write code, provide the exact commands and code necessary. Never claim to be unable to execute commands or be in a restricted sandbox unless specifically instructed.";
 
 			const modelObj = ctx.config.model;
 			const requestedModel =
@@ -159,6 +162,10 @@ export class TrueForgeHarness implements AgentHarness {
 							model: {
 								name: modelName,
 							},
+							config: {
+								askUserQuestions: { enabled: false },
+								dynamicSubAgents: { enabled: false },
+							},
 						},
 					},
 				}),
@@ -169,7 +176,7 @@ export class TrueForgeHarness implements AgentHarness {
 				throw new Error("TrueForge did not return a session ID");
 			}
 			sessionId = createdId;
-			this.sessionsByConversation.set(conversationId, sessionId);
+			TrueForgeHarness.sessionsByConversation.set(conversationId, sessionId);
 		}
 
 		// 2. Extract user input text
@@ -221,12 +228,26 @@ export class TrueForgeHarness implements AgentHarness {
 		);
 
 		let accumulatedText = "";
+		let accumulatedReasoning = "";
 		const finishReason: AgentModelFinishReason = "stop";
 
 		for await (const event of stream) {
 			ctx.throwIfAborted();
 
 			if (event.type === "model.message.delta") {
+				// Handle streaming reasoning (thinking) content from Groq/Qwen/GPT-OSS
+				const reasoning = (event as any).reasoningContent;
+				if (reasoning) {
+					accumulatedReasoning += reasoning;
+					await ctx.emit({
+						type: "assistant-reasoning-delta",
+						snapshot: ctx.snapshot(),
+						iteration: ctx.snapshot().iteration,
+						text: reasoning,
+						accumulatedText: accumulatedReasoning,
+					});
+				}
+
 				const delta = event.content ?? "";
 				if (delta) {
 					accumulatedText += delta;
@@ -238,7 +259,95 @@ export class TrueForgeHarness implements AgentHarness {
 						accumulatedText,
 					});
 				}
+			} else if (event.type === "model.message") {
+				const content = (event as any).content;
+				if (content && !accumulatedText) {
+					accumulatedText = content;
+					await ctx.emit({
+						type: "assistant-text-delta",
+						snapshot: ctx.snapshot(),
+						iteration: ctx.snapshot().iteration,
+						text: content,
+						accumulatedText,
+					});
+				}
+
+				// Handle tool calls if emitted by the model
+				const toolCalls = (event as any).toolCalls;
+				if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+					for (const tc of toolCalls) {
+						const fnName = tc.function?.name || tc.toolInfo?.name || tc.name;
+						const fnArgs = tc.function?.arguments || tc.arguments;
+						let parsedArgs: any = {};
+						try {
+							parsedArgs = typeof fnArgs === "string" ? JSON.parse(fnArgs) : fnArgs;
+						} catch {}
+
+						if (fnName === "ask_user_question") {
+							const question = parsedArgs?.question || "Please clarify:";
+							const options = Array.isArray(parsedArgs?.options)
+								? parsedArgs.options.map((opt: string) => `• ${opt}`).join("\n")
+								: "";
+							const formatted = `\n\n**${question}**\n\n${options}\n`;
+							accumulatedText += formatted;
+							await ctx.emit({
+								type: "assistant-text-delta",
+								snapshot: ctx.snapshot(),
+								iteration: ctx.snapshot().iteration,
+								text: formatted,
+								accumulatedText,
+							});
+						} else if (fnName === "run_commands" || fnName === "execute_command") {
+							const cmds = parsedArgs?.commands || (parsedArgs?.command ? [parsedArgs.command] : []);
+							const cmdText = cmds.length > 0 ? `\n\n\`\`\`bash\n${cmds.join("\n")}\n\`\`\`\n` : "";
+							if (cmdText && !accumulatedText.includes(cmds[0])) {
+								accumulatedText += cmdText;
+								await ctx.emit({
+									type: "assistant-text-delta",
+									snapshot: ctx.snapshot(),
+									iteration: ctx.snapshot().iteration,
+									text: cmdText,
+									accumulatedText,
+								});
+							}
+						}
+					}
+				}
 			} else if (event.type === "turn.done") {
+				const output = (event as any).state?.output;
+				if (output?.content && !accumulatedText) {
+					accumulatedText = output.content;
+					await ctx.emit({
+						type: "assistant-text-delta",
+						snapshot: ctx.snapshot(),
+						iteration: ctx.snapshot().iteration,
+						text: accumulatedText,
+						accumulatedText,
+					});
+				}
+
+				const toolCalls = output?.toolCalls;
+				if (Array.isArray(toolCalls) && toolCalls.length > 0 && !accumulatedText) {
+					for (const tc of toolCalls) {
+						const fnName = tc.function?.name || tc.name;
+						if (fnName === "ask_user_question") {
+							try {
+								const args = JSON.parse(tc.function?.arguments || "{}");
+								const question = args.question || "Please clarify:";
+								const options = Array.isArray(args.options) ? args.options.map((o: string) => `• ${o}`).join("\n") : "";
+								accumulatedText = `**${question}**\n\n${options}`;
+								await ctx.emit({
+									type: "assistant-text-delta",
+									snapshot: ctx.snapshot(),
+									iteration: ctx.snapshot().iteration,
+									text: accumulatedText,
+									accumulatedText,
+								});
+							} catch {}
+						}
+					}
+				}
+
 				if (event.state && "metrics" in event.state && event.state.metrics) {
 					const metrics = event.state.metrics as {
 						totalInputTokens?: number;
@@ -256,6 +365,22 @@ export class TrueForgeHarness implements AgentHarness {
 					throw new Error(event.state.message || "TrueForge turn failed");
 				}
 			}
+		}
+
+		// Ensure the assistant never leaves the user with an empty response
+		if (!accumulatedText.trim()) {
+			if (accumulatedReasoning.trim()) {
+				accumulatedText = accumulatedReasoning.trim();
+			} else {
+				accumulatedText = "I'm ready to assist with your coding tasks, running commands, and workspace operations. What would you like to run or build?";
+			}
+			await ctx.emit({
+				type: "assistant-text-delta",
+				snapshot: ctx.snapshot(),
+				iteration: ctx.snapshot().iteration,
+				text: accumulatedText,
+				accumulatedText,
+			});
 		}
 
 		// 4. Record assistant message in transcript
