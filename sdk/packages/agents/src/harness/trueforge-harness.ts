@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { TrueForge } from "@truefoundry/trueforge-sdk";
 import type {
 	AgentMessage,
@@ -43,12 +46,13 @@ export class TrueForgeHarness implements AgentHarness {
 	private readonly fallbackClient?: TrueForge;
 	private readonly configuredModelName?: string;
 	private static readonly sessionsByConversation = new Map<string, string>();
+	private static isSpawning = false;
 
 	constructor(options: TrueForgeHarnessOptions = {}) {
 		const baseUrl =
 			options.baseUrl ||
 			process.env.TRUEFORGE_BASE_URL ||
-			"http://localhost:8790";
+			"http://127.0.0.1:8790";
 		const token =
 			options.token ||
 			process.env.TFY_API_KEY ||
@@ -59,10 +63,10 @@ export class TrueForgeHarness implements AgentHarness {
 			token,
 		});
 
-		// Fallback client for IPv6 loopback on Windows if localhost/127.0.0.1 fails
+		// Fallback client for localhost / IPv6 loopback on Windows if 127.0.0.1 fails
 		if (!options.baseUrl && !process.env.TRUEFORGE_BASE_URL) {
 			this.fallbackClient = new TrueForge({
-				baseUrl: "http://[::1]:8790",
+				baseUrl: "http://localhost:8790",
 				token,
 			});
 		}
@@ -72,13 +76,121 @@ export class TrueForgeHarness implements AgentHarness {
 			process.env.TRUEFORGE_MODEL;
 	}
 
+	private static findTrueForgeCli(): string | undefined {
+		const appData =
+			process.env.LOCALAPPDATA ||
+			(process.env.USERPROFILE ? path.join(process.env.USERPROFILE, "AppData", "Local") : "");
+		if (appData) {
+			const npxDir = path.join(appData, "npm-cache", "_npx");
+			if (fs.existsSync(npxDir)) {
+				try {
+					const entries = fs.readdirSync(npxDir);
+					for (const entry of entries) {
+						const cliCandidate = path.join(
+							npxDir,
+							entry,
+							"node_modules",
+							"@truefoundry",
+							"trueforge",
+							"dist",
+							"cli.js",
+						);
+						if (fs.existsSync(cliCandidate)) {
+							return cliCandidate;
+						}
+					}
+				} catch {}
+			}
+		}
+		return undefined;
+	}
+
+	private static async ensureServerRunning(): Promise<boolean> {
+		if (TrueForgeHarness.isSpawning) {
+			for (let i = 0; i < 20; i++) {
+				await new Promise((r) => setTimeout(r, 400));
+				try {
+					const res = await fetch("http://127.0.0.1:8790/api/v1/models");
+					if (res.ok) return true;
+				} catch {}
+			}
+			return false;
+		}
+
+		TrueForgeHarness.isSpawning = true;
+		try {
+			const cliPath = TrueForgeHarness.findTrueForgeCli();
+			const env = {
+				...process.env,
+				HOST: "0.0.0.0",
+				NETWORK_POLICY_ENABLED: "false",
+			};
+
+			if (cliPath && fs.existsSync(cliPath)) {
+				const child = spawn(process.execPath, [cliPath, "--port", "8790"], {
+					detached: true,
+					stdio: "ignore",
+					env,
+					windowsHide: true,
+				});
+				child.unref();
+			} else {
+				const isWin = process.platform === "win32";
+				const cmd = isWin ? "npx.cmd" : "npx";
+				const child = spawn(cmd, ["@truefoundry/trueforge@latest", "--port", "8790"], {
+					detached: true,
+					stdio: "ignore",
+					env,
+					windowsHide: true,
+					shell: isWin,
+				});
+				child.unref();
+			}
+
+			// Wait up to 10 seconds for server to respond
+			for (let i = 0; i < 25; i++) {
+				await new Promise((r) => setTimeout(r, 400));
+				try {
+					const res = await fetch("http://127.0.0.1:8790/api/v1/models");
+					if (res.ok) return true;
+				} catch {}
+			}
+		} catch (err) {
+			console.warn("[TrueForgeHarness] Failed to auto-spawn TrueForge server:", err);
+		} finally {
+			TrueForgeHarness.isSpawning = false;
+		}
+		return false;
+	}
+
 	private async withClient<T>(operation: (client: TrueForge) => Promise<T>): Promise<T> {
 		try {
 			return await operation(this.client);
 		} catch (error: any) {
-			if (this.fallbackClient && (error?.message?.includes("fetch failed") || error?.code === "ECONNREFUSED" || error?.cause?.code === "ECONNREFUSED")) {
-				return await operation(this.fallbackClient);
+			const isConnectionError =
+				error?.message?.includes("fetch failed") ||
+				error?.code === "ECONNREFUSED" ||
+				error?.cause?.code === "ECONNREFUSED";
+
+			if (isConnectionError && this.fallbackClient) {
+				try {
+					return await operation(this.fallbackClient);
+				} catch {}
 			}
+
+			if (isConnectionError) {
+				const spawned = await TrueForgeHarness.ensureServerRunning();
+				if (spawned) {
+					try {
+						return await operation(this.client);
+					} catch {
+						if (this.fallbackClient) {
+							return await operation(this.fallbackClient);
+						}
+					}
+				}
+			}
+
 			throw error;
 		}
 	}
