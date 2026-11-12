@@ -249,12 +249,29 @@ export class TrueForgeHarness implements AgentHarness {
 		// 1. Resolve or create TrueForge session for this conversation
 		let sessionId = TrueForgeHarness.sessionsByConversation.get(conversationId);
 		if (!sessionId) {
-			let systemPrompt =
-				(typeof ctx.config.systemPrompt === "string" ? ctx.config.systemPrompt : "") ||
-				"You are Zentrix, an autonomous AI software engineering assistant.";
+			let basePrompt = (typeof ctx.config.systemPrompt === "string" ? ctx.config.systemPrompt : "").trim();
 
-			// Ensure the model knows it is Zentrix with full execution capabilities
-			systemPrompt += "\n\n# Capabilities & Persona\nYou are Zentrix, an autonomous software engineering assistant running inside VS Code.\nYou can execute terminal commands, edit and create files, search code, and assist users with all development tasks.\nAlways answer user prompts directly, proactively, and clearly. When asked to execute commands or write code, provide the exact commands and code necessary. Never claim to be unable to execute commands or be in a restricted sandbox unless specifically instructed.";
+			// Strip any legacy mandates forcing API tool calls since tools are not exposed via function-calling schemas
+			basePrompt = basePrompt
+				.replace(/IMPORTANT:\s*Always includes? tool calls[^\n]*/gi, "")
+				.replace(/Response without tool calls will considered as completed[^\n]*/gi, "")
+				.replace(/run independent inspection commands in one run_commands call[;,]?/gi, "")
+				.replace(/read all known relevant files in one read_files call[;,]?/gi, "");
+
+			let systemPrompt = basePrompt || "You are Zentrix, an autonomous AI software engineering assistant.";
+
+			systemPrompt += `\n\n# Execution & Command Guidelines
+You are Zentrix, an autonomous software engineering assistant running inside VS Code.
+You assist users with all development tasks: writing code, running terminal commands, creating and editing files, and debugging.
+
+CRITICAL INSTRUCTIONS FOR ACTIONS AND COMMANDS:
+1. Do NOT invoke or emit JSON/API function calls or tools (such as run_commands, execute_command, or ask_user_question) via function-call schemas.
+2. When the user asks you to run, execute, clone, pull, test, or build anything, ALWAYS provide the exact, executable terminal command inside standard markdown bash blocks:
+\`\`\`bash
+git clone <repo-url>
+\`\`\`
+3. Always explain clearly what each command does and provide complete, functional, runnable commands.
+4. Never state that you cannot execute commands or that you are in a restricted sandbox. Provide the necessary command and instructions directly and proactively.`;
 
 			const modelObj = ctx.config.model;
 			const requestedModel =
