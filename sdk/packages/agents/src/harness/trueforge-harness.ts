@@ -79,6 +79,34 @@ export class TrueForgeHarness implements AgentHarness {
 			process.env.TRUEFORGE_MODEL;
 	}
 
+	private static findNodeExecutable(): string {
+		const isWin = process.platform === "win32";
+		const exec = process.execPath;
+		const execLower = exec.toLowerCase();
+		if (
+			!execLower.endsWith("code.exe") &&
+			!execLower.endsWith("code") &&
+			!execLower.endsWith("electron.exe") &&
+			execLower.includes("node")
+		) {
+			return exec;
+		}
+
+		if (isWin) {
+			const candidates = [
+				"C:\\Program Files\\nodejs\\node.exe",
+				"C:\\Program Files\\Volta\\node.exe",
+				"C:\\nvm4w\\nodejs\\node.exe",
+				path.join(process.env.LOCALAPPDATA || "", "Programs", "node", "node.exe"),
+			];
+			for (const cand of candidates) {
+				if (fs.existsSync(cand)) return cand;
+			}
+			return "node.exe";
+		}
+		return "node";
+	}
+
 	private static findTrueForgeCli(): string | undefined {
 		const appData =
 			process.env.LOCALAPPDATA ||
@@ -123,6 +151,7 @@ export class TrueForgeHarness implements AgentHarness {
 		TrueForgeHarness.isSpawning = true;
 		try {
 			const cliPath = TrueForgeHarness.findTrueForgeCli();
+			const nodeExe = TrueForgeHarness.findNodeExecutable();
 			const env = {
 				...process.env,
 				HOST: "0.0.0.0",
@@ -130,11 +159,14 @@ export class TrueForgeHarness implements AgentHarness {
 			};
 
 			if (cliPath && fs.existsSync(cliPath)) {
-				const child = spawn(process.execPath, [cliPath, "--port", "8790"], {
+				const isWin = process.platform === "win32";
+				const useShell = isWin && !nodeExe.includes("\\");
+				const child = spawn(nodeExe, [cliPath, "--port", "8790"], {
 					detached: true,
 					stdio: "ignore",
 					env,
 					windowsHide: true,
+					shell: useShell,
 				});
 				child.unref();
 			} else {
@@ -263,18 +295,19 @@ export class TrueForgeHarness implements AgentHarness {
 
 			let systemPrompt = basePrompt || "You are Zentrix, an autonomous AI software engineering assistant.";
 
-			systemPrompt += `\n\n# Execution & Command Guidelines
-You are Zentrix, an autonomous software engineering assistant running inside VS Code.
-You assist users with all development tasks: writing code, running terminal commands, creating and editing files, and debugging.
+			systemPrompt += `\n\n# Execution & Environment Capabilities
+You are Zentrix, an autonomous software engineering assistant running directly inside VS Code on the user's computer.
+You have FULL access to the user's workspace, file system, and terminal.
+You are NOT in a restricted sandbox. You CAN execute terminal commands, clone git repositories, run builds, install packages, and write files.
 
 CRITICAL INSTRUCTIONS FOR ACTIONS AND COMMANDS:
-1. Do NOT invoke or emit JSON/API function calls or tools (such as run_commands, execute_command, or ask_user_question) via function-call schemas.
-2. When the user asks you to run, execute, clone, pull, test, build, or do anything requiring a terminal action, ALWAYS provide the exact terminal command inside standard markdown bash blocks:
+1. When asked if you can run commands, clone repositories, or access the system, ALWAYS affirm that YES, you can execute commands directly on the user's machine. Never state that you cannot execute code, that you are sandboxed, or that you lack privileged access.
+2. When the user asks you to perform an action (such as clone or pull a repo, run tests, build, install, or run commands), ALWAYS provide the exact shell commands in standard markdown bash blocks:
 \`\`\`bash
 git clone <repo-url>
 \`\`\`
-3. State clearly what command you are executing. The terminal runner will automatically execute the commands on the user's machine.
-4. Never state that you cannot execute commands or that you are in a restricted sandbox. You have full permission to provide and run the necessary commands.`;
+3. Do NOT invoke or emit JSON/API function calls or tools (such as run_commands, execute_command, or ask_user_question) via function-call schemas. Simply format commands in standard markdown \`\`\`bash ... \`\`\` code blocks. The integrated terminal runner automatically executes them on the user's machine.
+4. State clearly what command you are executing. Affirm that the action is being performed.`;
 
 			const modelObj = ctx.config.model;
 			const requestedModel =
@@ -364,14 +397,32 @@ git clone <repo-url>
 			let accumulatedReasoning = "";
 			const finishReason: AgentModelFinishReason = "stop";
 
-			const handleToolCalls = async (toolCalls: any[]) => {
+			const pendingToolCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
+
+			const recordToolCallChunks = (toolCalls: any[]) => {
 				if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
 				for (const tc of toolCalls) {
+					const idx = typeof tc.index === "number" ? tc.index : 0;
+					let existing = pendingToolCalls.get(idx);
+					if (!existing) {
+						existing = { arguments: "" };
+						pendingToolCalls.set(idx, existing);
+					}
+					if (tc.id) existing.id = tc.id;
 					const fnName = tc.function?.name || tc.toolInfo?.name || tc.name;
+					if (fnName) existing.name = fnName;
 					const fnArgs = tc.function?.arguments || tc.arguments;
+					if (fnArgs) existing.arguments += fnArgs;
+				}
+			};
+
+			const flushToolCalls = async () => {
+				for (const [, tc] of pendingToolCalls) {
+					const fnName = tc.name;
+					if (!fnName) continue;
 					let parsedArgs: any = {};
 					try {
-						parsedArgs = typeof fnArgs === "string" ? JSON.parse(fnArgs) : fnArgs;
+						parsedArgs = typeof tc.arguments === "string" ? JSON.parse(tc.arguments) : tc.arguments;
 					} catch {}
 
 					if (fnName === "ask_user_question") {
@@ -439,7 +490,7 @@ git clone <repo-url>
 					// Handle tool calls in deltas
 					const toolCalls = (event as any).toolCalls;
 					if (toolCalls) {
-						await handleToolCalls(toolCalls);
+						recordToolCallChunks(toolCalls);
 					}
 				} else if (event.type === "model.message") {
 					const content = (event as any).content;
@@ -456,13 +507,14 @@ git clone <repo-url>
 
 					const toolCalls = (event as any).toolCalls;
 					if (toolCalls) {
-						await handleToolCalls(toolCalls);
+						recordToolCallChunks(toolCalls);
 					}
 				} else if (event.type === "tool.response_required") {
 					const toolCalls = (event as any).toolCalls;
 					if (toolCalls) {
-						await handleToolCalls(toolCalls);
+						recordToolCallChunks(toolCalls);
 					}
+					await flushToolCalls();
 				} else if (event.type === "turn.done") {
 					const output = (event as any).state?.output;
 					if (output?.content && !accumulatedText) {
@@ -477,9 +529,10 @@ git clone <repo-url>
 					}
 
 					const toolCalls = output?.toolCalls;
-					if (toolCalls && !accumulatedText) {
-						await handleToolCalls(toolCalls);
+					if (toolCalls) {
+						recordToolCallChunks(toolCalls);
 					}
+					await flushToolCalls();
 
 					if (event.state && "metrics" in event.state && event.state.metrics) {
 						const metrics = event.state.metrics as {
@@ -529,9 +582,13 @@ git clone <repo-url>
 				return cmds;
 			};
 
+			const trimmedPrompt = promptText.trim();
 			const isExecutionRequested =
-				/^(pull|clone|run|do it|run them|execute|install|build|test|start|setup)\b/i.test(promptText.trim()) ||
-				/(please\s+)?(run|execute|do it|run them|pull|clone)\b/i.test(promptText.trim());
+				/^(pull|clone|run|do it|run them|execute|exceute|install|build|test|start|setup|yes|go ahead|proceed)\b/i.test(trimmedPrompt) ||
+				/(please\s+)?(run|execute|exceute|do it|run them|pull|clone|install|build|test)\b/i.test(trimmedPrompt) ||
+				/^(can you\??)$/i.test(trimmedPrompt) ||
+				/can you (run|execute|exceute|do|clone|pull)/i.test(trimmedPrompt) ||
+				/(meant to|want to|need to) (run|execute|exceute)/i.test(trimmedPrompt);
 
 			let commandsToRun = extractCommands(accumulatedText);
 
