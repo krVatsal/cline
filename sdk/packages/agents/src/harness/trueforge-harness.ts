@@ -279,35 +279,36 @@ export class TrueForgeHarness implements AgentHarness {
 		ctx.throwIfAborted();
 
 		const snapshot = ctx.snapshot();
-		const conversationId = snapshot.conversationId ?? "default";
+		const conversationId =
+			(ctx.config as any).sessionId?.trim() ||
+			(ctx.config as any).conversationId?.trim() ||
+			snapshot.conversationId ||
+			snapshot.agentId ||
+			"default";
 
 		// 1. Resolve or create TrueForge session for this conversation
 		let sessionId = TrueForgeHarness.sessionsByConversation.get(conversationId);
 		if (!sessionId) {
-			let basePrompt = (typeof ctx.config.systemPrompt === "string" ? ctx.config.systemPrompt : "").trim();
+			const basePrompt = (typeof ctx.config.systemPrompt === "string" ? ctx.config.systemPrompt : "").trim();
+			const envMatch = basePrompt.match(/<env>[\s\S]*?<\/env>/i);
+			const envSection = envMatch ? `\n\n${envMatch[0]}` : "";
+			const cwd = (ctx.config as any).cwd || (ctx.config as any).workspaceRoot || process.cwd();
 
-			// Strip any legacy mandates forcing API tool calls since tools are not exposed via function-calling schemas
-			basePrompt = basePrompt
-				.replace(/IMPORTANT:\s*Always includes? tool calls[^\n]*/gi, "")
-				.replace(/Response without tool calls will considered as completed[^\n]*/gi, "")
-				.replace(/run independent inspection commands in one run_commands call[;,]?/gi, "")
-				.replace(/read all known relevant files in one read_files call[;,]?/gi, "");
+			const systemPrompt = `You are Zentrix, an autonomous software engineering assistant running directly inside VS Code on the user's computer.
+You assist users with all development tasks: writing code, creating and editing files, running tests, inspecting repositories, and executing terminal commands.
+You have FULL access to the user's workspace, file system, and terminal. You are NOT in a restricted sandbox.
 
-			let systemPrompt = basePrompt || "You are Zentrix, an autonomous AI software engineering assistant.";
+Current Workspace: ${cwd}${envSection}
 
-			systemPrompt += `\n\n# Execution & Environment Capabilities
-You are Zentrix, an autonomous software engineering assistant running directly inside VS Code on the user's computer.
-You have FULL access to the user's workspace, file system, and terminal.
-You are NOT in a restricted sandbox. You CAN execute terminal commands, clone git repositories, run builds, install packages, and write files.
-
-CRITICAL INSTRUCTIONS FOR ACTIONS AND COMMANDS:
-1. When asked if you can run commands, clone repositories, or access the system, ALWAYS affirm that YES, you can execute commands directly on the user's machine. Never state that you cannot execute code, that you are sandboxed, or that you lack privileged access.
-2. When the user asks you to perform an action (such as clone or pull a repo, run tests, build, install, or run commands), ALWAYS provide the exact shell commands in standard markdown bash blocks:
+CRITICAL RULES FOR COMMANDS AND ACTIONS:
+1. NEVER invoke, emit, or format JSON/API function calls or tools (such as run_commands, read_files, search_codebase, execute_command, or ask_user_question) via function-call schemas. Any JSON function call will fail validation and terminate the turn with an error.
+2. When the user asks you to inspect, read, clone, pull, test, build, run, or do anything requiring an action on the machine, ALWAYS provide the exact shell commands inside standard markdown bash blocks:
 \`\`\`bash
 git clone <repo-url>
 \`\`\`
-3. Do NOT invoke or emit JSON/API function calls or tools (such as run_commands, execute_command, or ask_user_question) via function-call schemas. Simply format commands in standard markdown \`\`\`bash ... \`\`\` code blocks. The integrated terminal runner automatically executes them on the user's machine.
-4. State clearly what command you are executing. Affirm that the action is being performed.`;
+3. The integrated terminal runner automatically executes markdown bash blocks on the user's machine. State clearly what command you are executing.
+4. When writing code, creating tests, or making changes, output complete files or clear code snippets with file paths.
+5. Never state that you cannot execute code, that you are sandboxed, or that you lack privileged access. You have full capability to run commands and inspect files.`;
 
 			const modelObj = ctx.config.model;
 			const requestedModel =
@@ -349,35 +350,66 @@ git clone <repo-url>
 		if (typeof input === "string") {
 			promptText = input;
 		} else if (input && typeof input === "object") {
-			if ("content" in input && Array.isArray((input as any).content)) {
-				const parts = (input as any).content;
-				promptText = parts
-					.filter((part: any) => part && part.type === "text" && typeof part.text === "string")
-					.map((part: any) => part.text)
-					.join("\n");
-			} else if (Array.isArray(input)) {
-				const lastMsg = input[input.length - 1];
-				if (lastMsg && "content" in lastMsg && Array.isArray(lastMsg.content)) {
-					promptText = lastMsg.content
-						.filter((part: any) => part && part.type === "text" && typeof part.text === "string")
-						.map((part: any) => part.text)
+			if ("text" in input && typeof (input as any).text === "string") {
+				promptText = (input as any).text;
+			} else if ("prompt" in input && typeof (input as any).prompt === "string") {
+				promptText = (input as any).prompt;
+			} else if ("content" in input) {
+				if (typeof (input as any).content === "string") {
+					promptText = (input as any).content;
+				} else if (Array.isArray((input as any).content)) {
+					promptText = (input as any).content
+						.filter((part: any) => part && (part.type === "text" || typeof part.text === "string"))
+						.map((part: any) => (typeof part === "string" ? part : part.text || ""))
 						.join("\n");
+				}
+			} else if (Array.isArray(input)) {
+				for (let i = input.length - 1; i >= 0; i--) {
+					const msg = input[i];
+					if (msg && typeof msg === "object") {
+						if (typeof (msg as any).content === "string") {
+							promptText = (msg as any).content;
+							break;
+						} else if (Array.isArray((msg as any).content)) {
+							const extracted = (msg as any).content
+								.filter((part: any) => part && (part.type === "text" || typeof part.text === "string"))
+								.map((part: any) => (typeof part === "string" ? part : part.text || ""))
+								.join("\n");
+							if (extracted) {
+								promptText = extracted;
+								break;
+							}
+						}
+					}
 				}
 			}
 		}
 
 		if (!promptText && snapshot.messages.length > 0) {
-			const lastMsg = snapshot.messages[snapshot.messages.length - 1];
-			if (lastMsg && lastMsg.role === "user" && Array.isArray(lastMsg.content)) {
-				promptText = lastMsg.content
-					.filter((part: any) => part && part.type === "text" && typeof part.text === "string")
-					.map((part: any) => part.text)
-					.join("\n");
+			for (let i = snapshot.messages.length - 1; i >= 0; i--) {
+				const msg = snapshot.messages[i];
+				if (msg.role === "user") {
+					if (typeof (msg as any).content === "string") {
+						promptText = (msg as any).content;
+						break;
+					} else if (Array.isArray(msg.content)) {
+						const extracted = msg.content
+							.filter((part: any) => part && (part.type === "text" || typeof part.text === "string"))
+							.map((part: any) => (typeof part === "string" ? part : (part as any).text || ""))
+							.join("\n");
+						if (extracted) {
+							promptText = extracted;
+							break;
+						}
+					}
+				}
 			}
 		}
 
-		if (!promptText) {
-			promptText = "Continue";
+		// If no prompt was provided and no user messages exist in history, this is an interactive
+		// session bootstrap without an initial prompt. Return cleanly without sending a turn.
+		if (!promptText.trim()) {
+			return ctx.finishRun("completed", undefined, "");
 		}
 
 		// 3. Initiate turn streaming from TrueForge
