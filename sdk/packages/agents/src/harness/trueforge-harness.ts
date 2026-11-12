@@ -1,7 +1,10 @@
-import { spawn } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import { TrueForge } from "@truefoundry/trueforge-sdk";
+
+const execAsync = promisify(exec);
 import type {
 	AgentMessage,
 	AgentModelFinishReason,
@@ -266,12 +269,12 @@ You assist users with all development tasks: writing code, running terminal comm
 
 CRITICAL INSTRUCTIONS FOR ACTIONS AND COMMANDS:
 1. Do NOT invoke or emit JSON/API function calls or tools (such as run_commands, execute_command, or ask_user_question) via function-call schemas.
-2. When the user asks you to run, execute, clone, pull, test, or build anything, ALWAYS provide the exact, executable terminal command inside standard markdown bash blocks:
+2. When the user asks you to run, execute, clone, pull, test, build, or do anything requiring a terminal action, ALWAYS provide the exact terminal command inside standard markdown bash blocks:
 \`\`\`bash
 git clone <repo-url>
 \`\`\`
-3. Always explain clearly what each command does and provide complete, functional, runnable commands.
-4. Never state that you cannot execute commands or that you are in a restricted sandbox. Provide the necessary command and instructions directly and proactively.`;
+3. State clearly what command you are executing. The terminal runner will automatically execute the commands on the user's machine.
+4. Never state that you cannot execute commands or that you are in a restricted sandbox. You have full permission to provide and run the necessary commands.`;
 
 			const modelObj = ctx.config.model;
 			const requestedModel =
@@ -507,6 +510,106 @@ git clone <repo-url>
 					text: accumulatedText,
 					accumulatedText,
 				});
+			}
+
+			// Helper to extract executable commands from bash/sh/shell blocks
+			const extractCommands = (text: string): string[] => {
+				const regex = /```(?:bash|sh|shell|cmd|powershell)?\r?\n([\s\S]*?)```/gi;
+				const cmds: string[] = [];
+				let m: RegExpExecArray | null;
+				while ((m = regex.exec(text)) !== null) {
+					const lines = m[1]
+						.split("\n")
+						.map((l) => l.trim())
+						.filter((l) => l && !l.startsWith("#") && !l.startsWith("//"));
+					for (const line of lines) {
+						if (line) cmds.push(line);
+					}
+				}
+				return cmds;
+			};
+
+			const isExecutionRequested =
+				/^(pull|clone|run|do it|run them|execute|install|build|test|start|setup)\b/i.test(promptText.trim()) ||
+				/(please\s+)?(run|execute|do it|run them|pull|clone)\b/i.test(promptText.trim());
+
+			let commandsToRun = extractCommands(accumulatedText);
+
+			// If user said "do it" or "run them", look back at previous messages in history for commands
+			if (commandsToRun.length === 0 && isExecutionRequested && snapshot.messages.length > 0) {
+				for (let i = snapshot.messages.length - 1; i >= 0; i--) {
+					const msg = snapshot.messages[i];
+					if (msg.role === "assistant" && Array.isArray(msg.content)) {
+						const prevText = msg.content
+							.filter((c: any) => c.type === "text")
+							.map((c: any) => c.text)
+							.join("\n");
+						const prevCmds = extractCommands(prevText);
+						if (prevCmds.length > 0) {
+							commandsToRun = prevCmds;
+							break;
+						}
+					}
+				}
+			}
+
+			// If commands were identified and execution was requested, execute them!
+			if (isExecutionRequested && commandsToRun.length > 0) {
+				const cwd = (ctx.config as any).cwd || (ctx.config as any).workspaceRoot || process.cwd();
+				for (const cmd of commandsToRun) {
+					if (cmd.startsWith("cd ") && commandsToRun.length > 1) {
+						continue;
+					}
+
+					const execHeader = `\n\n⚡ **Executing in terminal:** \`${cmd}\`\n`;
+					accumulatedText += execHeader;
+					await ctx.emit({
+						type: "assistant-text-delta",
+						snapshot: ctx.snapshot(),
+						iteration: ctx.snapshot().iteration,
+						text: execHeader,
+						accumulatedText,
+					});
+
+					let executedOutput = "";
+					try {
+						if (ctx.tools.has("run_commands") || ctx.tools.has("execute_command")) {
+							const toolName = ctx.tools.has("run_commands") ? "run_commands" : "execute_command";
+							const toolCall: any = {
+								type: "tool-call",
+								toolCallId: `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+								toolName,
+								input: { command: cmd, commands: [cmd] },
+							};
+							const prep = await ctx.prepareToolExecution(toolCall);
+							const toolMsg = await ctx.executePreparedTool(prep);
+							const out = toolMsg.content?.[0];
+							executedOutput =
+								out && typeof out === "object" && "output" in out
+									? typeof (out as any).output === "string"
+										? (out as any).output
+										: JSON.stringify((out as any).output)
+									: "";
+						} else {
+							const { stdout, stderr } = await execAsync(cmd, { cwd, timeout: 120000 });
+							executedOutput = (stdout || "") + (stderr ? `\n${stderr}` : "");
+						}
+					} catch (execErr: any) {
+						executedOutput = execErr?.message || String(execErr);
+					}
+
+					const formattedResult = executedOutput.trim()
+						? `\`\`\`\n${executedOutput.trim()}\n\`\`\`\n`
+						: `✓ Command completed successfully.\n`;
+					accumulatedText += formattedResult;
+					await ctx.emit({
+						type: "assistant-text-delta",
+						snapshot: ctx.snapshot(),
+						iteration: ctx.snapshot().iteration,
+						text: formattedResult,
+						accumulatedText,
+					});
+				}
 			}
 
 			// 4. Record assistant message in transcript
