@@ -623,9 +623,9 @@ git clone <repo-url>
 				});
 			}
 
-			// Helper to extract executable commands from bash/sh/shell blocks
+			// Helper to extract executable commands strictly from bash/sh/shell/terminal code blocks
 			const extractCommands = (text: string): string[] => {
-				const regex = /```(?:bash|sh|shell|cmd|powershell)?\r?\n([\s\S]*?)```/gi;
+				const regex = /```(?:bash|sh|shell|cmd|powershell|ps1|terminal)[ \t]*\r?\n([\s\S]*?)\r?\n```/gi;
 				const cmds: string[] = [];
 				let m: RegExpExecArray | null;
 				while ((m = regex.exec(text)) !== null) {
@@ -642,11 +642,11 @@ git clone <repo-url>
 
 			const trimmedPrompt = promptText.trim();
 			const isExecutionRequested =
-				/^(pull|clone|run|do it|run them|execute|exceute|install|build|test|start|setup|yes|go ahead|proceed)\b/i.test(trimmedPrompt) ||
-				/(please\s+)?(run|execute|exceute|do it|run them|pull|clone|install|build|test)\b/i.test(trimmedPrompt) ||
-				/^(can you\??)$/i.test(trimmedPrompt) ||
-				/can you (run|execute|exceute|do|clone|pull)/i.test(trimmedPrompt) ||
-				/(meant to|want to|need to) (run|execute|exceute)/i.test(trimmedPrompt);
+				!/^(create|write|add|generate|make|show|explain|how|why|what|describe|draft|implement|design)\b/i.test(trimmedPrompt) &&
+				(/^(do it|run them|run it|run that|do that|yes|go ahead|proceed|start it|run tests?|run build)\b/i.test(trimmedPrompt) ||
+				/^(pull|clone|execute|run|install|build|start)\s+/i.test(trimmedPrompt) ||
+				/^(pull|clone|execute|run|install|build)$/i.test(trimmedPrompt) ||
+				/(?:please\s+|can you\s+|could you\s+)(run|execute|pull|clone|install|build|do it|run them)\b/i.test(trimmedPrompt));
 
 			let commandsToRun = extractCommands(accumulatedText);
 
