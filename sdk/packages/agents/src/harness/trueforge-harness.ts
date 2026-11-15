@@ -471,6 +471,37 @@ git clone <repo-url>
 			return ctx.finishRun("completed", undefined, "");
 		}
 
+		// Auto-discover and attach context for workspace files mentioned in the prompt
+		let turnInputContent = promptText;
+		const workspaceCwd = this.resolveWorkspaceCwd(ctx);
+		const fileCandidateRegex = /(?:^|[\s"'`(\[])([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]{1,10})(?:$|[\s"',`)\]:])/g;
+		const seenFiles = new Set<string>();
+		let fileContextBlocks = "";
+
+		let mFile: RegExpExecArray | null;
+		while ((mFile = fileCandidateRegex.exec(promptText)) !== null) {
+			const candidate = mFile[1].trim();
+			if (candidate.startsWith("http") || candidate.endsWith(".") || !candidate.includes(".")) {
+				continue;
+			}
+			const absPath = path.isAbsolute(candidate) ? candidate : path.resolve(workspaceCwd, candidate);
+			if (fs.existsSync(absPath) && !seenFiles.has(absPath)) {
+				try {
+					const stat = fs.statSync(absPath);
+					if (stat.isFile() && stat.size <= 250000) {
+						seenFiles.add(absPath);
+						const content = fs.readFileSync(absPath, "utf8");
+						const rel = path.relative(workspaceCwd, absPath) || candidate;
+						fileContextBlocks += `\n\n<file_content path="${rel}">\n${content}\n</file_content>`;
+					}
+				} catch {}
+			}
+		}
+
+		if (fileContextBlocks) {
+			turnInputContent = `${promptText}\n\nWorkspace File Context:${fileContextBlocks}`;
+		}
+
 		// 3. Initiate turn streaming from TrueForge
 		try {
 			const stream = await this.withClient((c) =>
@@ -478,7 +509,7 @@ git clone <repo-url>
 					input: [
 						{
 							type: "user.message",
-							content: promptText,
+							content: turnInputContent,
 						},
 					],
 				}),
