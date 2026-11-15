@@ -300,13 +300,13 @@ You have FULL access to the user's workspace, file system, and terminal. You are
 
 Current Workspace: ${cwd}${envSection}
 
-CRITICAL RULES FOR COMMANDS AND ACTIONS:
-1. NEVER invoke, emit, or format JSON/API function calls or tools (such as run_commands, read_files, search_codebase, execute_command, or ask_user_question) via function-call schemas. Any JSON function call will fail validation and terminate the turn with an error.
-2. When the user asks you to inspect, read, clone, pull, test, build, run, or do anything requiring an action on the machine, ALWAYS provide the exact shell commands inside standard markdown bash blocks:
+CRITICAL RULES:
+1. You do not have external function-calling or API tools enabled. Communicate purely using standard markdown text and code blocks.
+2. When the user asks you to inspect, read, clone, pull, test, build, run, or execute anything, ALWAYS provide the exact executable shell commands inside standard markdown bash blocks:
 \`\`\`bash
 git clone <repo-url>
 \`\`\`
-3. The integrated terminal runner automatically executes markdown bash blocks on the user's machine. State clearly what command you are executing.
+3. The integrated VS Code runner executes markdown bash blocks on the user's machine. State clearly what command you are providing.
 4. When writing code, creating tests, or making changes, output complete files or clear code snippets with file paths.
 5. Never state that you cannot execute code, that you are sandboxed, or that you lack privileged access. You have full capability to run commands and inspect files.`;
 
@@ -406,9 +406,15 @@ git clone <repo-url>
 			}
 		}
 
+		// Strip mode envelopes and tags like <mode_notice>...</mode_notice> or <user_input mode="act">...</user_input>
+		promptText = promptText
+			.replace(/<mode_notice>[\s\S]*?<\/mode_notice>/gi, "")
+			.replace(/<user_input(?:\s+[^>]*)?>([\s\S]*?)<\/user_input>/gi, "$1")
+			.trim();
+
 		// If no prompt was provided and no user messages exist in history, this is an interactive
 		// session bootstrap without an initial prompt. Return cleanly without sending a turn.
-		if (!promptText.trim()) {
+		if (!promptText) {
 			return ctx.finishRun("completed", undefined, "");
 		}
 
