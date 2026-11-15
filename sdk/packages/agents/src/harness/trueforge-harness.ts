@@ -292,6 +292,33 @@ export class TrueForgeHarness implements AgentHarness {
 		return "groq/openai-gpt-oss-120b";
 	}
 
+	private resolveWorkspaceCwd(ctx: AgentHarnessContext): string {
+		const basePrompt = typeof ctx.config.systemPrompt === "string" ? ctx.config.systemPrompt : "";
+		const envWorkDir = basePrompt.match(/Working Directory:\s*([^\r\n<]+)/i)?.[1]?.trim();
+		if (envWorkDir && fs.existsSync(envWorkDir)) {
+			return envWorkDir;
+		}
+
+		try {
+			const vscode = (globalThis as any).vscode || (typeof require === "function" ? require("vscode") : undefined);
+			const wsFolder = vscode?.workspace?.workspaceFolders?.[0]?.uri?.fsPath;
+			if (wsFolder && fs.existsSync(wsFolder)) {
+				return wsFolder;
+			}
+		} catch {}
+
+		const cfgCwd = (ctx.config as any).cwd || (ctx.config as any).workspaceRoot;
+		if (cfgCwd && fs.existsSync(cfgCwd)) {
+			return cfgCwd;
+		}
+
+		if (envWorkDir) {
+			return envWorkDir;
+		}
+
+		return process.cwd();
+	}
+
 	public async run(
 		ctx: AgentHarnessContext,
 		input?: AgentRunInput,
@@ -312,7 +339,7 @@ export class TrueForgeHarness implements AgentHarness {
 			const basePrompt = (typeof ctx.config.systemPrompt === "string" ? ctx.config.systemPrompt : "").trim();
 			const envMatch = basePrompt.match(/<env>[\s\S]*?<\/env>/i);
 			const envSection = envMatch ? `\n\n${envMatch[0]}` : "";
-			const cwd = (ctx.config as any).cwd || (ctx.config as any).workspaceRoot || process.cwd();
+			const cwd = this.resolveWorkspaceCwd(ctx);
 
 			const systemPrompt = `You are Zentrix, an autonomous software engineering assistant running directly inside VS Code on the user's computer.
 You assist users with all development tasks: writing code, creating and editing files, running tests, inspecting repositories, and executing terminal commands.
@@ -632,7 +659,7 @@ git clone <repo-url>
 			// Helper to extract and save any files specified in the response
 			const extractFiles = (text: string): Array<{ path: string; content: string }> => {
 				const files: Array<{ path: string; content: string }> = [];
-				const fileBlockRegex = /(?:\*\*File:\*\*|File:)\s*[`*]*([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)[`*]*\s*\r?\n```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)\r?\n```/gi;
+				const fileBlockRegex = /(?:\*\*File:\*\*|File:|(?:Create|Add|Update)\s+(?:the\s+)?file:?)\s*[`*]*([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)[`*]*[\s\S]*?```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)\r?\n```/gi;
 				let m: RegExpExecArray | null;
 				while ((m = fileBlockRegex.exec(text)) !== null) {
 					files.push({ path: m[1].trim(), content: m[2] });
@@ -648,7 +675,7 @@ git clone <repo-url>
 
 			const filesToSave = extractFiles(accumulatedText);
 			if (filesToSave.length > 0) {
-				const cwd = (ctx.config as any).cwd || (ctx.config as any).workspaceRoot || process.cwd();
+				const cwd = this.resolveWorkspaceCwd(ctx);
 				for (const file of filesToSave) {
 					try {
 						const fullPath = path.isAbsolute(file.path) ? file.path : path.resolve(cwd, file.path);
@@ -720,7 +747,7 @@ git clone <repo-url>
 
 			// If commands were identified and execution was requested, execute them!
 			if (isExecutionRequested && commandsToRun.length > 0) {
-				const cwd = (ctx.config as any).cwd || (ctx.config as any).workspaceRoot || process.cwd();
+				const cwd = this.resolveWorkspaceCwd(ctx);
 				for (const cmd of commandsToRun) {
 					if (cmd.startsWith("cd ") && commandsToRun.length > 1) {
 						continue;
