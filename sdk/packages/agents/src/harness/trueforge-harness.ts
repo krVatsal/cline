@@ -322,13 +322,19 @@ Current Workspace: ${cwd}${envSection}
 
 CRITICAL RULES:
 1. You do not have external function-calling or API tools enabled. Communicate purely using standard markdown text and code blocks.
-2. When the user asks you to inspect, read, clone, pull, test, build, run, or execute anything, ALWAYS provide the exact executable shell commands inside standard markdown bash blocks:
+2. When creating, adding, or modifying files, ALWAYS format each file with:
+**File:** \`path/to/file.ext\`
+Followed immediately by the code block with the complete file contents:
+\`\`\`<language>
+<complete code>
+\`\`\`
+The integrated workspace manager automatically writes and saves these files directly to disk in the workspace.
+3. When the user asks you to inspect, read, clone, pull, test, build, run, or execute anything, ALWAYS provide the exact executable shell commands inside standard markdown bash blocks:
 \`\`\`bash
 git clone <repo-url>
 \`\`\`
-3. The integrated VS Code runner executes markdown bash blocks on the user's machine. State clearly what command you are providing.
-4. When writing code, creating tests, or making changes, output complete files or clear code snippets with file paths.
-5. Never state that you cannot execute code, that you are sandboxed, or that you lack privileged access. You have full capability to run commands and inspect files.`;
+4. State clearly what files you created or what commands you provided.
+5. Never state that you cannot execute code, that you are sandboxed, or that you lack privileged access. You have full capability to run commands, create files, and inspect the workspace.`;
 
 			const modelObj = ctx.config.model;
 			const requestedModel =
@@ -621,6 +627,50 @@ git clone <repo-url>
 					text: accumulatedText,
 					accumulatedText,
 				});
+			}
+
+			// Helper to extract and save any files specified in the response
+			const extractFiles = (text: string): Array<{ path: string; content: string }> => {
+				const files: Array<{ path: string; content: string }> = [];
+				const fileBlockRegex = /(?:\*\*File:\*\*|File:)\s*[`*]*([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)[`*]*\s*\r?\n```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)\r?\n```/gi;
+				let m: RegExpExecArray | null;
+				while ((m = fileBlockRegex.exec(text)) !== null) {
+					files.push({ path: m[1].trim(), content: m[2] });
+				}
+				if (files.length === 0) {
+					const commentRegex = /```(?:[a-zA-Z0-9_-]+)?\r?\n\s*(?:#|\/\/)\s*(?:File:\s*)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)\r?\n([\s\S]*?)\r?\n```/gi;
+					while ((m = commentRegex.exec(text)) !== null) {
+						files.push({ path: m[1].trim(), content: m[2] });
+					}
+				}
+				return files;
+			};
+
+			const filesToSave = extractFiles(accumulatedText);
+			if (filesToSave.length > 0) {
+				const cwd = (ctx.config as any).cwd || (ctx.config as any).workspaceRoot || process.cwd();
+				for (const file of filesToSave) {
+					try {
+						const fullPath = path.isAbsolute(file.path) ? file.path : path.resolve(cwd, file.path);
+						const dir = path.dirname(fullPath);
+						if (!fs.existsSync(dir)) {
+							fs.mkdirSync(dir, { recursive: true });
+						}
+						fs.writeFileSync(fullPath, file.content, "utf8");
+						const relPath = path.relative(cwd, fullPath) || file.path;
+						const saveNotice = `\n\n⚡ **Saved file:** \`${relPath}\`\n`;
+						accumulatedText += saveNotice;
+						await ctx.emit({
+							type: "assistant-text-delta",
+							snapshot: ctx.snapshot(),
+							iteration: ctx.snapshot().iteration,
+							text: saveNotice,
+							accumulatedText,
+						});
+					} catch (writeErr: any) {
+						console.warn("[TrueForgeHarness] Failed to write file:", file.path, writeErr);
+					}
+				}
 			}
 
 			// Helper to extract executable commands strictly from bash/sh/shell/terminal code blocks
