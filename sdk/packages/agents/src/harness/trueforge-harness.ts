@@ -465,6 +465,44 @@ git clone <repo-url>
 			.replace(/<user_input(?:\s+[^>]*)?>([\s\S]*?)<\/user_input>/gi, "$1")
 			.trim();
 
+		// If this is a synthetic resumption or generic continue/retry prompt, recover the original task prompt from history
+		if (
+			promptText.includes("[TASK RESUMPTION]") ||
+			promptText.toLowerCase().trim() === "continue" ||
+			promptText.toLowerCase().trim() === "retry"
+		) {
+			let originalPrompt = "";
+			for (const msg of snapshot.messages) {
+				if (msg.role === "user") {
+					const text =
+						typeof (msg as any).content === "string"
+							? (msg as any).content
+							: Array.isArray((msg as any).content)
+								? (msg as any).content
+										.filter((p: any) => p && (p.type === "text" || typeof p.text === "string"))
+										.map((p: any) => (typeof p === "string" ? p : p.text || ""))
+										.join("\n")
+								: "";
+					const cleaned = text
+						.replace(/<mode_notice>[\s\S]*?<\/mode_notice>/gi, "")
+						.replace(/<user_input(?:\s+[^>]*)?>([\s\S]*?)<\/user_input>/gi, "$1")
+						.replace(/\[TASK RESUMPTION\][^\r\n]*/gi, "")
+						.trim();
+					if (
+						cleaned &&
+						cleaned.toLowerCase() !== "continue" &&
+						cleaned.toLowerCase() !== "retry"
+					) {
+						originalPrompt = cleaned;
+						break;
+					}
+				}
+			}
+			if (originalPrompt) {
+				promptText = `Please resume and complete this task:\n${originalPrompt}`;
+			}
+		}
+
 		// If no prompt was provided and no user messages exist in history, this is an interactive
 		// session bootstrap without an initial prompt. Return cleanly without sending a turn.
 		if (!promptText) {
@@ -502,350 +540,385 @@ git clone <repo-url>
 			turnInputContent = `${promptText}\n\nWorkspace File Context:${fileContextBlocks}`;
 		}
 
-		// 3. Initiate turn streaming from TrueForge
-		try {
-			const stream = await this.withClient((c) =>
-				c.sessions.createTurnStream(sessionId, {
-					input: [
-						{
-							type: "user.message",
-							content: turnInputContent,
-						},
-					],
-				}),
-			);
-
-			let accumulatedText = "";
-			let accumulatedReasoning = "";
-			const finishReason: AgentModelFinishReason = "stop";
-
-			const pendingToolCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
-
-			const recordToolCallChunks = (toolCalls: any[]) => {
-				if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
-				for (const tc of toolCalls) {
-					const idx = typeof tc.index === "number" ? tc.index : 0;
-					let existing = pendingToolCalls.get(idx);
-					if (!existing) {
-						existing = { arguments: "" };
-						pendingToolCalls.set(idx, existing);
-					}
-					if (tc.id) existing.id = tc.id;
-					const fnName = tc.function?.name || tc.toolInfo?.name || tc.name;
-					if (fnName) existing.name = fnName;
-					const fnArgs = tc.function?.arguments || tc.arguments;
-					if (fnArgs) existing.arguments += fnArgs;
-				}
-			};
-
-			const flushToolCalls = async () => {
-				for (const [, tc] of pendingToolCalls) {
-					const fnName = tc.name;
-					if (!fnName) continue;
-					let parsedArgs: any = {};
-					try {
-						parsedArgs = typeof tc.arguments === "string" ? JSON.parse(tc.arguments) : tc.arguments;
-					} catch {}
-
-					if (fnName === "ask_user_question") {
-						const question = parsedArgs?.question || "Please clarify:";
-						const options = Array.isArray(parsedArgs?.options)
-							? parsedArgs.options.map((opt: string) => `• ${opt}`).join("\n")
-							: "";
-						const formatted = `\n\n**${question}**\n\n${options}\n`;
-						if (!accumulatedText.includes(question)) {
-							accumulatedText += formatted;
-							await ctx.emit({
-								type: "assistant-text-delta",
-								snapshot: ctx.snapshot(),
-								iteration: ctx.snapshot().iteration,
-								text: formatted,
-								accumulatedText,
-							});
-						}
-					} else if (fnName === "run_commands" || fnName === "execute_command") {
-						const cmds = parsedArgs?.commands || (parsedArgs?.command ? [parsedArgs.command] : []);
-						const cmdText = cmds.length > 0 ? `\n\n\`\`\`bash\n${cmds.join("\n")}\n\`\`\`\n` : "";
-						if (cmdText && !accumulatedText.includes(cmds[0])) {
-							accumulatedText += cmdText;
-							await ctx.emit({
-								type: "assistant-text-delta",
-								snapshot: ctx.snapshot(),
-								iteration: ctx.snapshot().iteration,
-								text: cmdText,
-								accumulatedText,
-							});
-						}
-					}
-				}
-			};
-
-			for await (const event of stream) {
-				ctx.throwIfAborted();
-
-				if (event.type === "model.message.delta") {
-					// Handle streaming reasoning (thinking) content from Groq/Qwen/GPT-OSS
-					const reasoning = (event as any).reasoningContent;
-					if (reasoning) {
-						accumulatedReasoning += reasoning;
-						await ctx.emit({
-							type: "assistant-reasoning-delta",
-							snapshot: ctx.snapshot(),
-							iteration: ctx.snapshot().iteration,
-							text: reasoning,
-							accumulatedText: accumulatedReasoning,
-						});
-					}
-
-					const delta = event.content ?? "";
-					if (delta) {
-						accumulatedText += delta;
-						await ctx.emit({
-							type: "assistant-text-delta",
-							snapshot: ctx.snapshot(),
-							iteration: ctx.snapshot().iteration,
-							text: delta,
-							accumulatedText,
-						});
-					}
-
-					// Handle tool calls in deltas
-					const toolCalls = (event as any).toolCalls;
-					if (toolCalls) {
-						recordToolCallChunks(toolCalls);
-					}
-				} else if (event.type === "model.message") {
-					const content = (event as any).content;
-					if (content && !accumulatedText) {
-						accumulatedText = content;
-						await ctx.emit({
-							type: "assistant-text-delta",
-							snapshot: ctx.snapshot(),
-							iteration: ctx.snapshot().iteration,
-							text: content,
-							accumulatedText,
-						});
-					}
-
-					const toolCalls = (event as any).toolCalls;
-					if (toolCalls) {
-						recordToolCallChunks(toolCalls);
-					}
-				} else if (event.type === "tool.response_required") {
-					const toolCalls = (event as any).toolCalls;
-					if (toolCalls) {
-						recordToolCallChunks(toolCalls);
-					}
-					await flushToolCalls();
-				} else if (event.type === "turn.done") {
-					const output = (event as any).state?.output;
-					if (output?.content && !accumulatedText) {
-						accumulatedText = output.content;
-						await ctx.emit({
-							type: "assistant-text-delta",
-							snapshot: ctx.snapshot(),
-							iteration: ctx.snapshot().iteration,
-							text: accumulatedText,
-							accumulatedText,
-						});
-					}
-
-					const toolCalls = output?.toolCalls;
-					if (toolCalls) {
-						recordToolCallChunks(toolCalls);
-					}
-					await flushToolCalls();
-
-					if (event.state && "metrics" in event.state && event.state.metrics) {
-						const metrics = event.state.metrics as {
-							totalInputTokens?: number;
-							totalOutputTokens?: number;
-							totalTokens?: number;
-						};
-						const usage: Partial<AgentUsage> = {
-							inputTokens: metrics.totalInputTokens ?? 0,
-							outputTokens: metrics.totalOutputTokens ?? 0,
-						};
-						await ctx.updateUsage(usage);
-					}
-
-					if (event.state && event.state.status === "error") {
-						throw new Error(event.state.message || "TrueForge turn failed");
-					}
-				}
+		// 3. Helpers for autonomous multi-turn loop
+		const extractFiles = (text: string): Array<{ path: string; content: string }> => {
+			const files: Array<{ path: string; content: string }> = [];
+			const fileBlockRegex = /(?:\*\*File:\*\*|File:|(?:Create|Add|Update)\s+(?:the\s+)?file:?)\s*[`*]*([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)[`*]*[\s\S]*?```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)\r?\n```/gi;
+			let m: RegExpExecArray | null;
+			while ((m = fileBlockRegex.exec(text)) !== null) {
+				files.push({ path: m[1].trim(), content: m[2] });
 			}
-
-			// Ensure the assistant never leaves the user with an empty response
-			if (!accumulatedText.trim()) {
-				accumulatedText = "I'm ready to assist with your coding tasks, running commands, and workspace operations. What would you like to run or build?";
-				await ctx.emit({
-					type: "assistant-text-delta",
-					snapshot: ctx.snapshot(),
-					iteration: ctx.snapshot().iteration,
-					text: accumulatedText,
-					accumulatedText,
-				});
-			}
-
-			// Helper to extract and save any files specified in the response
-			const extractFiles = (text: string): Array<{ path: string; content: string }> => {
-				const files: Array<{ path: string; content: string }> = [];
-				const fileBlockRegex = /(?:\*\*File:\*\*|File:|(?:Create|Add|Update)\s+(?:the\s+)?file:?)\s*[`*]*([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)[`*]*[\s\S]*?```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)\r?\n```/gi;
-				let m: RegExpExecArray | null;
-				while ((m = fileBlockRegex.exec(text)) !== null) {
+			if (files.length === 0) {
+				const commentRegex = /```(?:[a-zA-Z0-9_-]+)?\r?\n\s*(?:#|\/\/)\s*(?:File:\s*)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)\r?\n([\s\S]*?)\r?\n```/gi;
+				while ((m = commentRegex.exec(text)) !== null) {
 					files.push({ path: m[1].trim(), content: m[2] });
 				}
-				if (files.length === 0) {
-					const commentRegex = /```(?:[a-zA-Z0-9_-]+)?\r?\n\s*(?:#|\/\/)\s*(?:File:\s*)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)\r?\n([\s\S]*?)\r?\n```/gi;
-					while ((m = commentRegex.exec(text)) !== null) {
-						files.push({ path: m[1].trim(), content: m[2] });
-					}
-				}
-				return files;
-			};
+			}
+			return files;
+		};
 
-			const filesToSave = extractFiles(accumulatedText);
-			if (filesToSave.length > 0) {
-				const cwd = this.resolveWorkspaceCwd(ctx);
-				for (const file of filesToSave) {
-					try {
-						const fullPath = path.isAbsolute(file.path) ? file.path : path.resolve(cwd, file.path);
-						const dir = path.dirname(fullPath);
-						if (!fs.existsSync(dir)) {
-							fs.mkdirSync(dir, { recursive: true });
-						}
-						fs.writeFileSync(fullPath, file.content, "utf8");
-						const relPath = path.relative(cwd, fullPath) || file.path;
-						const saveNotice = `\n\n⚡ **Saved file:** \`${relPath}\`\n`;
-						accumulatedText += saveNotice;
-						await ctx.emit({
-							type: "assistant-text-delta",
-							snapshot: ctx.snapshot(),
-							iteration: ctx.snapshot().iteration,
-							text: saveNotice,
-							accumulatedText,
-						});
-					} catch (writeErr: any) {
-						console.warn("[TrueForgeHarness] Failed to write file:", file.path, writeErr);
-					}
+		const extractCommands = (text: string): string[] => {
+			const regex = /```(?:bash|sh|shell|cmd|powershell|ps1|terminal)[ \t]*\r?\n([\s\S]*?)\r?\n```/gi;
+			const cmds: string[] = [];
+			let m: RegExpExecArray | null;
+			while ((m = regex.exec(text)) !== null) {
+				const lines = m[1]
+					.split("\n")
+					.map((l) => l.trim())
+					.filter((l) => l && !l.startsWith("#") && !l.startsWith("//"));
+				for (const line of lines) {
+					if (line) cmds.push(line);
 				}
 			}
+			return cmds;
+		};
 
-			// Helper to extract executable commands strictly from bash/sh/shell/terminal code blocks
-			const extractCommands = (text: string): string[] => {
-				const regex = /```(?:bash|sh|shell|cmd|powershell|ps1|terminal)[ \t]*\r?\n([\s\S]*?)\r?\n```/gi;
-				const cmds: string[] = [];
-				let m: RegExpExecArray | null;
-				while ((m = regex.exec(text)) !== null) {
-					const lines = m[1]
-						.split("\n")
-						.map((l) => l.trim())
-						.filter((l) => l && !l.startsWith("#") && !l.startsWith("//"));
-					for (const line of lines) {
-						if (line) cmds.push(line);
+		const isInspectionCommand = (cmd: string): boolean => {
+			return /^(sed|cat|grep|find|findstr|dir|ls|type|head|tail|Get-Content|git\s+(status|diff|log|show|branch))\b/i.test(cmd.trim());
+		};
+
+		const trimmedPrompt = promptText.trim();
+		const isExecutionRequested =
+			!/^(create|write|add|generate|make|show|explain|how|why|what|describe|draft|implement|design)\b/i.test(trimmedPrompt) &&
+			(/^(do it|run them|run it|run that|do that|yes|go ahead|proceed|start it|run tests?|run build)\b/i.test(trimmedPrompt) ||
+			/^(pull|clone|execute|run|install|build|start)\s+/i.test(trimmedPrompt) ||
+			/^(pull|clone|execute|run|install|build)$/i.test(trimmedPrompt) ||
+			/(?:please\s+|can you\s+|could you\s+)(run|execute|pull|clone|install|build|do it|run them)\b/i.test(trimmedPrompt));
+
+		const maxIterations = 5;
+		let iteration = 0;
+		let nextTurnPrompt = turnInputContent;
+		let fullAccumulatedText = "";
+		const executedCommandsSet = new Set<string>();
+		const finishReason: AgentModelFinishReason = "stop";
+
+		// 4. Autonomous execution loop: runs turns, executes inspection/action commands, and completes work
+		try {
+			while (iteration < maxIterations) {
+				ctx.throwIfAborted();
+				iteration++;
+
+				const stream = await this.withClient((c) =>
+					c.sessions.createTurnStream(sessionId, {
+						input: [
+							{
+								type: "user.message",
+								content: nextTurnPrompt,
+							},
+						],
+					}),
+				);
+
+				let turnAccumulatedText = "";
+				let accumulatedReasoning = "";
+
+				const pendingToolCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
+
+				const recordToolCallChunks = (toolCalls: any[]) => {
+					if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
+					for (const tc of toolCalls) {
+						const idx = typeof tc.index === "number" ? tc.index : 0;
+						let existing = pendingToolCalls.get(idx);
+						if (!existing) {
+							existing = { arguments: "" };
+							pendingToolCalls.set(idx, existing);
+						}
+						if (tc.id) existing.id = tc.id;
+						const fnName = tc.function?.name || tc.toolInfo?.name || tc.name;
+						if (fnName) existing.name = fnName;
+						const fnArgs = tc.function?.arguments || tc.arguments;
+						if (fnArgs) existing.arguments += fnArgs;
 					}
-				}
-				return cmds;
-			};
+				};
 
-			const trimmedPrompt = promptText.trim();
-			const isExecutionRequested =
-				!/^(create|write|add|generate|make|show|explain|how|why|what|describe|draft|implement|design)\b/i.test(trimmedPrompt) &&
-				(/^(do it|run them|run it|run that|do that|yes|go ahead|proceed|start it|run tests?|run build)\b/i.test(trimmedPrompt) ||
-				/^(pull|clone|execute|run|install|build|start)\s+/i.test(trimmedPrompt) ||
-				/^(pull|clone|execute|run|install|build)$/i.test(trimmedPrompt) ||
-				/(?:please\s+|can you\s+|could you\s+)(run|execute|pull|clone|install|build|do it|run them)\b/i.test(trimmedPrompt));
+				const flushToolCalls = async () => {
+					for (const [, tc] of pendingToolCalls) {
+						const fnName = tc.name;
+						if (!fnName) continue;
+						let parsedArgs: any = {};
+						try {
+							parsedArgs = typeof tc.arguments === "string" ? JSON.parse(tc.arguments) : tc.arguments;
+						} catch {}
 
-			let commandsToRun = extractCommands(accumulatedText);
+						if (fnName === "ask_user_question") {
+							const question = parsedArgs?.question || "Please clarify:";
+							const options = Array.isArray(parsedArgs?.options)
+								? parsedArgs.options.map((opt: string) => `• ${opt}`).join("\n")
+								: "";
+							const formatted = `\n\n**${question}**\n\n${options}\n`;
+							if (!turnAccumulatedText.includes(question)) {
+								turnAccumulatedText += formatted;
+								await ctx.emit({
+									type: "assistant-text-delta",
+									snapshot: ctx.snapshot(),
+									iteration: ctx.snapshot().iteration,
+									text: formatted,
+									accumulatedText: fullAccumulatedText + turnAccumulatedText,
+								});
+							}
+						} else if (fnName === "run_commands" || fnName === "execute_command") {
+							const cmds = parsedArgs?.commands || (parsedArgs?.command ? [parsedArgs.command] : []);
+							const cmdText = cmds.length > 0 ? `\n\n\`\`\`bash\n${cmds.join("\n")}\n\`\`\`\n` : "";
+							if (cmdText && !turnAccumulatedText.includes(cmds[0])) {
+								turnAccumulatedText += cmdText;
+								await ctx.emit({
+									type: "assistant-text-delta",
+									snapshot: ctx.snapshot(),
+									iteration: ctx.snapshot().iteration,
+									text: cmdText,
+									accumulatedText: fullAccumulatedText + turnAccumulatedText,
+								});
+							}
+						}
+					}
+				};
 
-			// If user said "do it" or "run them", look back at previous messages in history for commands
-			if (commandsToRun.length === 0 && isExecutionRequested && snapshot.messages.length > 0) {
-				for (let i = snapshot.messages.length - 1; i >= 0; i--) {
-					const msg = snapshot.messages[i];
-					if (msg.role === "assistant" && Array.isArray(msg.content)) {
-						const prevText = msg.content
-							.filter((c: any) => c.type === "text")
-							.map((c: any) => c.text)
-							.join("\n");
-						const prevCmds = extractCommands(prevText);
-						if (prevCmds.length > 0) {
-							commandsToRun = prevCmds;
-							break;
+				for await (const event of stream) {
+					ctx.throwIfAborted();
+
+					if (event.type === "model.message.delta") {
+						const reasoning = (event as any).reasoningContent;
+						if (reasoning) {
+							accumulatedReasoning += reasoning;
+							await ctx.emit({
+								type: "assistant-reasoning-delta",
+								snapshot: ctx.snapshot(),
+								iteration: ctx.snapshot().iteration,
+								text: reasoning,
+								accumulatedText: accumulatedReasoning,
+							});
+						}
+
+						const delta = event.content ?? "";
+						if (delta) {
+							turnAccumulatedText += delta;
+							await ctx.emit({
+								type: "assistant-text-delta",
+								snapshot: ctx.snapshot(),
+								iteration: ctx.snapshot().iteration,
+								text: delta,
+								accumulatedText: fullAccumulatedText + turnAccumulatedText,
+							});
+						}
+
+						const toolCalls = (event as any).toolCalls;
+						if (toolCalls) {
+							recordToolCallChunks(toolCalls);
+						}
+					} else if (event.type === "model.message") {
+						const content = (event as any).content;
+						if (content && !turnAccumulatedText) {
+							turnAccumulatedText = content;
+							await ctx.emit({
+								type: "assistant-text-delta",
+								snapshot: ctx.snapshot(),
+								iteration: ctx.snapshot().iteration,
+								text: content,
+								accumulatedText: fullAccumulatedText + turnAccumulatedText,
+							});
+						}
+
+						const toolCalls = (event as any).toolCalls;
+						if (toolCalls) {
+							recordToolCallChunks(toolCalls);
+						}
+					} else if (event.type === "tool.response_required") {
+						const toolCalls = (event as any).toolCalls;
+						if (toolCalls) {
+							recordToolCallChunks(toolCalls);
+						}
+						await flushToolCalls();
+					} else if (event.type === "turn.done") {
+						const output = (event as any).state?.output;
+						if (output?.content && !turnAccumulatedText) {
+							turnAccumulatedText = output.content;
+							await ctx.emit({
+								type: "assistant-text-delta",
+								snapshot: ctx.snapshot(),
+								iteration: ctx.snapshot().iteration,
+								text: turnAccumulatedText,
+								accumulatedText: fullAccumulatedText + turnAccumulatedText,
+							});
+						}
+
+						const toolCalls = output?.toolCalls;
+						if (toolCalls) {
+							recordToolCallChunks(toolCalls);
+						}
+						await flushToolCalls();
+
+						if (event.state && "metrics" in event.state && event.state.metrics) {
+							const metrics = event.state.metrics as {
+								totalInputTokens?: number;
+								totalOutputTokens?: number;
+								totalTokens?: number;
+							};
+							const usage: Partial<AgentUsage> = {
+								inputTokens: metrics.totalInputTokens ?? 0,
+								outputTokens: metrics.totalOutputTokens ?? 0,
+							};
+							await ctx.updateUsage(usage);
+						}
+
+						if (event.state && event.state.status === "error") {
+							throw new Error(event.state.message || "TrueForge turn failed");
 						}
 					}
 				}
-			}
 
-			// If commands were identified and execution was requested, execute them!
-			if (isExecutionRequested && commandsToRun.length > 0) {
+				if (!turnAccumulatedText.trim()) {
+					turnAccumulatedText = "I'm ready to assist with your coding tasks, running commands, and workspace operations. What would you like to run or build?";
+					await ctx.emit({
+						type: "assistant-text-delta",
+						snapshot: ctx.snapshot(),
+						iteration: ctx.snapshot().iteration,
+						text: turnAccumulatedText,
+						accumulatedText: fullAccumulatedText + turnAccumulatedText,
+					});
+				}
+
+				// Save any files produced in this turn
+				const filesToSave = extractFiles(turnAccumulatedText);
+				if (filesToSave.length > 0) {
+					const cwd = this.resolveWorkspaceCwd(ctx);
+					for (const file of filesToSave) {
+						try {
+							const fullPath = path.isAbsolute(file.path) ? file.path : path.resolve(cwd, file.path);
+							const dir = path.dirname(fullPath);
+							if (!fs.existsSync(dir)) {
+								fs.mkdirSync(dir, { recursive: true });
+							}
+							fs.writeFileSync(fullPath, file.content, "utf8");
+							const relPath = path.relative(cwd, fullPath) || file.path;
+							const saveNotice = `\n\n⚡ **Saved file:** \`${relPath}\`\n`;
+							turnAccumulatedText += saveNotice;
+							await ctx.emit({
+								type: "assistant-text-delta",
+								snapshot: ctx.snapshot(),
+								iteration: ctx.snapshot().iteration,
+								text: saveNotice,
+								accumulatedText: fullAccumulatedText + turnAccumulatedText,
+							});
+						} catch (writeErr: any) {
+							console.warn("[TrueForgeHarness] Failed to write file:", file.path, writeErr);
+						}
+					}
+				}
+
+				fullAccumulatedText += (fullAccumulatedText ? "\n\n" : "") + turnAccumulatedText;
+
+				// Check commands to run in this turn
+				let commandsToRun = extractCommands(turnAccumulatedText);
+				if (commandsToRun.length === 0 && isExecutionRequested && iteration === 1 && snapshot.messages.length > 0) {
+					for (let i = snapshot.messages.length - 1; i >= 0; i--) {
+						const msg = snapshot.messages[i];
+						if (msg.role === "assistant" && Array.isArray(msg.content)) {
+							const prevText = msg.content
+								.filter((c: any) => c.type === "text")
+								.map((c: any) => c.text)
+								.join("\n");
+							const prevCmds = extractCommands(prevText);
+							if (prevCmds.length > 0) {
+								commandsToRun = prevCmds;
+								break;
+							}
+						}
+					}
+				}
+
+				// Filter commands to execute: inspection commands are ALWAYS executed; other commands executed if requested
 				const cwd = this.resolveWorkspaceCwd(ctx);
+				const executedThisTurn: Array<{ cmd: string; output: string; isInspection: boolean }> = [];
+
 				for (const cmd of commandsToRun) {
 					if (cmd.startsWith("cd ") && commandsToRun.length > 1) {
 						continue;
 					}
+					const isInspect = isInspectionCommand(cmd);
+					if ((isInspect || isExecutionRequested) && !executedCommandsSet.has(cmd)) {
+						executedCommandsSet.add(cmd);
 
-					const execHeader = `\n\n⚡ **Executing in terminal:** \`${cmd}\`\n`;
-					accumulatedText += execHeader;
-					await ctx.emit({
-						type: "assistant-text-delta",
-						snapshot: ctx.snapshot(),
-						iteration: ctx.snapshot().iteration,
-						text: execHeader,
-						accumulatedText,
-					});
+						const execHeader = `\n\n⚡ **Executing in terminal:** \`${cmd}\`\n`;
+						fullAccumulatedText += execHeader;
+						await ctx.emit({
+							type: "assistant-text-delta",
+							snapshot: ctx.snapshot(),
+							iteration: ctx.snapshot().iteration,
+							text: execHeader,
+							accumulatedText: fullAccumulatedText,
+						});
 
-					let executedOutput = "";
-					try {
-						if (ctx.tools.has("run_commands") || ctx.tools.has("execute_command")) {
-							const toolName = ctx.tools.has("run_commands") ? "run_commands" : "execute_command";
-							const toolCall: any = {
-								type: "tool-call",
-								toolCallId: `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-								toolName,
-								input: { command: cmd, commands: [cmd] },
-							};
-							const prep = await ctx.prepareToolExecution(toolCall);
-							const toolMsg = await ctx.executePreparedTool(prep);
-							const out = toolMsg.content?.[0];
-							executedOutput =
-								out && typeof out === "object" && "output" in out
-									? typeof (out as any).output === "string"
-										? (out as any).output
-										: JSON.stringify((out as any).output)
-									: "";
-						} else {
-							const { stdout, stderr } = await execAsync(cmd, { cwd, timeout: 120000 });
-							executedOutput = (stdout || "") + (stderr ? `\n${stderr}` : "");
+						let executedOutput = "";
+						try {
+							if (ctx.tools.has("run_commands") || ctx.tools.has("execute_command")) {
+								const toolName = ctx.tools.has("run_commands") ? "run_commands" : "execute_command";
+								const toolCall: any = {
+									type: "tool-call",
+									toolCallId: `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+									toolName,
+									input: { command: cmd, commands: [cmd] },
+								};
+								const prep = await ctx.prepareToolExecution(toolCall);
+								const toolMsg = await ctx.executePreparedTool(prep);
+								const out = toolMsg.content?.[0];
+								executedOutput =
+									out && typeof out === "object" && "output" in out
+										? typeof (out as any).output === "string"
+											? (out as any).output
+											: JSON.stringify((out as any).output)
+										: "";
+							} else {
+								const { stdout, stderr } = await execAsync(cmd, { cwd, timeout: 120000 });
+								executedOutput = (stdout || "") + (stderr ? `\n${stderr}` : "");
+							}
+						} catch (execErr: any) {
+							executedOutput = execErr?.message || String(execErr);
 						}
-					} catch (execErr: any) {
-						executedOutput = execErr?.message || String(execErr);
-					}
 
-					const formattedResult = executedOutput.trim()
-						? `\`\`\`\n${executedOutput.trim()}\n\`\`\`\n`
-						: `✓ Command completed successfully.\n`;
-					accumulatedText += formattedResult;
-					await ctx.emit({
-						type: "assistant-text-delta",
-						snapshot: ctx.snapshot(),
-						iteration: ctx.snapshot().iteration,
-						text: formattedResult,
-						accumulatedText,
-					});
+						const formattedResult = executedOutput.trim()
+							? `\`\`\`\n${executedOutput.trim()}\n\`\`\`\n`
+							: `✓ Command completed successfully.\n`;
+						fullAccumulatedText += formattedResult;
+						await ctx.emit({
+							type: "assistant-text-delta",
+							snapshot: ctx.snapshot(),
+							iteration: ctx.snapshot().iteration,
+							text: formattedResult,
+							accumulatedText: fullAccumulatedText,
+						});
+
+						executedThisTurn.push({ cmd, output: executedOutput, isInspection: isInspect });
+					}
 				}
+
+				// Check if we should continue autonomously to the next turn:
+				const hasInspection = executedThisTurn.some((e) => e.isInspection);
+				if (hasInspection && filesToSave.length === 0 && iteration < maxIterations) {
+					// Feed back inspection command outputs to TrueForge so the model can complete the work!
+					nextTurnPrompt =
+						executedThisTurn
+							.filter((e) => e.isInspection)
+							.map((e) => `[Terminal output for \`${e.cmd}\`]:\n\`\`\`\n${e.output.slice(0, 10000)}\n\`\`\``)
+							.join("\n\n") +
+						"\n\nBased on this terminal output, now proceed to complete the user's task directly.";
+					continue;
+				}
+
+				// If no pending inspections, we are done!
+				break;
 			}
 
-			// 4. Record assistant message in transcript
+			// 5. Record assistant message in transcript
 			const assistantMessage: AgentMessage = {
 				id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 				role: "assistant",
-				content: accumulatedText ? [{ type: "text", text: accumulatedText }] : [],
+				content: fullAccumulatedText ? [{ type: "text", text: fullAccumulatedText }] : [],
 				createdAt: Date.now(),
 			};
 
 			await ctx.recordAssistantMessage(assistantMessage, finishReason);
 
-			return ctx.finishRun("completed", assistantMessage, accumulatedText);
+			return ctx.finishRun("completed", assistantMessage, fullAccumulatedText);
 		} catch (error: any) {
 			// In case of a session failure (e.g. 400 error), evict the cached session so next turn recovers cleanly
 			TrueForgeHarness.sessionsByConversation.delete(conversationId);
