@@ -63,6 +63,7 @@ export class TrueForgeHarness implements AgentHarness {
 
 		this.client = new TrueForge({
 			baseUrl,
+			environment: baseUrl,
 			token,
 		});
 
@@ -70,6 +71,7 @@ export class TrueForgeHarness implements AgentHarness {
 		if (!options.baseUrl && !process.env.TRUEFORGE_BASE_URL) {
 			this.fallbackClient = new TrueForge({
 				baseUrl: "http://localhost:8790",
+				environment: "http://localhost:8790",
 				token,
 			});
 		}
@@ -137,13 +139,24 @@ export class TrueForgeHarness implements AgentHarness {
 	}
 
 	private static async ensureServerRunning(): Promise<boolean> {
+		const checkServer = async (): Promise<boolean> => {
+			try {
+				const res = await fetch("http://127.0.0.1:8790/api/v1/models");
+				if (res.ok) return true;
+			} catch {}
+			try {
+				const res = await fetch("http://localhost:8790/api/v1/models");
+				if (res.ok) return true;
+			} catch {}
+			return false;
+		};
+
+		if (await checkServer()) return true;
+
 		if (TrueForgeHarness.isSpawning) {
-			for (let i = 0; i < 20; i++) {
-				await new Promise((r) => setTimeout(r, 400));
-				try {
-					const res = await fetch("http://127.0.0.1:8790/api/v1/models");
-					if (res.ok) return true;
-				} catch {}
+			for (let i = 0; i < 50; i++) {
+				await new Promise((r) => setTimeout(r, 500));
+				if (await checkServer()) return true;
 			}
 			return false;
 		}
@@ -182,13 +195,10 @@ export class TrueForgeHarness implements AgentHarness {
 				child.unref();
 			}
 
-			// Wait up to 10 seconds for server to respond
-			for (let i = 0; i < 25; i++) {
-				await new Promise((r) => setTimeout(r, 400));
-				try {
-					const res = await fetch("http://127.0.0.1:8790/api/v1/models");
-					if (res.ok) return true;
-				} catch {}
+			// Wait up to 25 seconds for server to start and become ready
+			for (let i = 0; i < 50; i++) {
+				await new Promise((r) => setTimeout(r, 500));
+				if (await checkServer()) return true;
 			}
 		} catch (err) {
 			console.warn("[TrueForgeHarness] Failed to auto-spawn TrueForge server:", err);
@@ -205,7 +215,8 @@ export class TrueForgeHarness implements AgentHarness {
 			const isConnectionError =
 				error?.message?.includes("fetch failed") ||
 				error?.code === "ECONNREFUSED" ||
-				error?.cause?.code === "ECONNREFUSED";
+				error?.cause?.code === "ECONNREFUSED" ||
+				error?.cause?.message?.includes("ECONNREFUSED");
 
 			if (isConnectionError && this.fallbackClient) {
 				try {
@@ -224,6 +235,15 @@ export class TrueForgeHarness implements AgentHarness {
 						}
 					}
 				}
+				// Final check against localhost fallback in case server just finished starting
+				if (this.fallbackClient) {
+					try {
+						return await operation(this.fallbackClient);
+					} catch {}
+				}
+				try {
+					return await operation(this.client);
+				} catch {}
 			}
 
 			throw error;
