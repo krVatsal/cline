@@ -65,6 +65,7 @@ export async function reportRolloutActivation(input: RolloutBundleActivation): P
 // NOTE: This is VS Code specific - services that should be registered
 // for all-platform should be registered in common.ts.
 export async function activate(context: vscode.ExtensionContext) {
+	(globalThis as any).vscode = vscode;
 	const activationStartTime = performance.now()
 
 	// Before anything spawns with the workspace as cwd (rg, git, hooks, MCP).
