@@ -788,6 +788,9 @@ git clone <repo-url>
 							if (!fs.existsSync(dir)) {
 								fs.mkdirSync(dir, { recursive: true });
 							}
+							const fileExisted = fs.existsSync(fullPath);
+							const originalContent = fileExisted ? fs.readFileSync(fullPath, "utf8") : "";
+
 							fs.writeFileSync(fullPath, file.content, "utf8");
 							const relPath = path.relative(cwd, fullPath) || file.path;
 							const saveNotice = `\n\n⚡ **Saved file:** \`${relPath}\`\n`;
@@ -805,14 +808,22 @@ git clone <repo-url>
 								const vscode = (globalThis as any).vscode || (typeof require === "function" ? require("vscode") : undefined);
 								if (vscode?.Uri?.file && vscode?.commands?.executeCommand) {
 									const fileUri = vscode.Uri.file(fullPath);
-									vscode.commands.executeCommand("git.openChange", fileUri).catch(async () => {
-										try {
-											const doc = await vscode.workspace.openTextDocument(fileUri);
-											await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
-										} catch {}
-									});
+									if (fileExisted && originalContent !== file.content) {
+										const leftUri = vscode.Uri.parse(`cline-diff:${encodeURIComponent(relPath)} (Original)`).with({
+											query: Buffer.from(originalContent, "utf8").toString("base64"),
+										});
+										const title = `${path.basename(fullPath)}: Original ↔ Modified`;
+										await vscode.commands.executeCommand("vscode.diff", leftUri, fileUri, title, {
+											preview: false,
+										});
+									} else {
+										const doc = await vscode.workspace.openTextDocument(fileUri);
+										await vscode.window.showTextDocument(doc, { preview: false });
+									}
 								}
-							} catch {}
+							} catch (diffErr) {
+								console.warn("[TrueForgeHarness] Failed to open diff:", diffErr);
+							}
 						} catch (writeErr: any) {
 							console.warn("[TrueForgeHarness] Failed to write file:", file.path, writeErr);
 						}
