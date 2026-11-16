@@ -799,6 +799,20 @@ git clone <repo-url>
 								text: saveNotice,
 								accumulatedText: fullAccumulatedText + turnAccumulatedText,
 							});
+
+							// Automatically open the diff view in VS Code so the user can inspect changes side-by-side
+							try {
+								const vscode = (globalThis as any).vscode || (typeof require === "function" ? require("vscode") : undefined);
+								if (vscode?.Uri?.file && vscode?.commands?.executeCommand) {
+									const fileUri = vscode.Uri.file(fullPath);
+									vscode.commands.executeCommand("git.openChange", fileUri).catch(async () => {
+										try {
+											const doc = await vscode.workspace.openTextDocument(fileUri);
+											await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
+										} catch {}
+									});
+								}
+							} catch {}
 						} catch (writeErr: any) {
 							console.warn("[TrueForgeHarness] Failed to write file:", file.path, writeErr);
 						}
