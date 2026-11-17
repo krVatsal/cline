@@ -1,5 +1,4 @@
 import { diagnosticsToProblemsString } from "@integrations/diagnostics"
-import { extractTextFromFile } from "@integrations/misc/extract-text"
 import { openFile } from "@integrations/misc/open-file"
 import { UrlContentFetcher } from "@services/browser/UrlContentFetcher"
 import { telemetryService } from "@services/telemetry"
@@ -7,8 +6,6 @@ import { mentionRegexGlobal } from "@shared/context-mentions"
 import { WorkspaceRoot } from "@shared/multi-root/types"
 import { openExternal } from "@utils/env"
 import { getCommitInfo, getWorkingState } from "@utils/git"
-import fs from "fs/promises"
-import { isBinaryFile } from "isbinaryfile"
 import * as path from "path"
 import { HostProvider } from "@/hosts/host-provider"
 import { getLatestTerminalOutput } from "@/hosts/vscode/terminal/get-latest-output"
@@ -71,15 +68,11 @@ export async function parseMentions(
 		if (isFileMention(mention)) {
 			const mentionPath = getFilePathFromMention(mention)
 			const workspaceHint = getWorkspaceHintFromMention(mention)
-			// For workspace-prefixed mentions, include the workspace name in the same format the model uses for tool calls
+			// Return a lightweight reference only, never loading or expanding file contents
 			if (workspaceHint) {
-				return mentionPath.endsWith("/")
-					? `'${workspaceHint}:${mentionPath}' (see below for folder content)`
-					: `'${workspaceHint}:${mentionPath}' (see below for file content)`
+				return `'${workspaceHint}:${mentionPath}'`
 			}
-			return mentionPath.endsWith("/")
-				? `'${mentionPath}' (see below for folder content)`
-				: `'${mentionPath}' (see below for file content)`
+			return `'${mentionPath}'`
 		}
 		if (mention === "problems") {
 			return `Workspace Problems (see below for diagnostics)`
@@ -148,131 +141,10 @@ export async function parseMentions(
 		} else if (isFileMention(mention)) {
 			const mentionPath = getFilePathFromMention(mention)
 			const mentionType = mention.endsWith("/") ? "folder" : "file"
-			const workspaceHint = getWorkspaceHintFromMention(mention)
-
-			const isMultiRoot = workspaceManager && workspaceManager.getRoots().length > 1
-			if (isMultiRoot && !workspaceHint) {
-				// Parallel search across all workspaces
-				const workspaceRoots = workspaceManager.getRoots()
-				const searchPromises = workspaceRoots.map(async (root: WorkspaceRoot) => {
-					try {
-						const content = await getFileOrFolderContent(mentionPath, root.path)
-						return {
-							workspaceName: root.name || path.basename(root.path),
-							content,
-							success: true,
-						}
-					} catch (error) {
-						return {
-							workspaceName: root.name || path.basename(root.path),
-							content: null,
-							success: false,
-							error: error.message,
-						}
-					}
-				})
-
-				const results = await Promise.all(searchPromises)
-				const successfulResults = results.filter((r) => r.success && r.content)
-
-				if (successfulResults.length === 0) {
-					const errorMsg = `File not found in any workspace. Searched: ${results.map((r) => r.workspaceName).join(", ")}`
-					if (mention.endsWith("/")) {
-						parsedText += `\n\n<folder_content path="${mentionPath}">\nError fetching content: ${errorMsg}\n</folder_content>`
-					} else {
-						parsedText += `\n\n<file_content path="${mentionPath}">\nError fetching content: ${errorMsg}\n</file_content>`
-					}
-					telemetryService.captureMentionFailed(mentionType, "not_found", errorMsg)
-				} else if (successfulResults.length === 1) {
-					// Found in exactly one workspace
-					const result = successfulResults[0]
-					if (mention.endsWith("/")) {
-						parsedText += `\n\n<folder_content path="${mentionPath}" workspace="${result.workspaceName}">\n${result.content}\n</folder_content>`
-					} else {
-						parsedText += `\n\n<file_content path="${mentionPath}" workspace="${result.workspaceName}">\n${result.content}\n</file_content>`
-						if (fileContextTracker) {
-							await fileContextTracker.trackFileContext(mentionPath, "file_mentioned")
-						}
-					}
-					telemetryService.captureMentionUsed(mentionType, result.content!.length)
-				} else {
-					// Found in multiple workspaces - include all candidates with workspace name
-					for (const result of successfulResults) {
-						if (mention.endsWith("/")) {
-							parsedText += `\n\n<folder_content path="${mentionPath}" workspace="${result.workspaceName}">\n${result.content}\n</folder_content>`
-						} else {
-							parsedText += `\n\n<file_content path="${mentionPath}" workspace="${result.workspaceName}">\n${result.content}\n</file_content>`
-						}
-					}
-					const totalLength = successfulResults.reduce((sum, r) => sum + (r.content?.length || 0), 0)
-					telemetryService.captureMentionUsed(mentionType, totalLength)
-				}
-			} else if (isMultiRoot && workspaceHint) {
-				// Search only in specified workspace
-				const targetRoot = workspaceManager.getRootByName(workspaceHint)
-				if (!targetRoot) {
-					const errorMsg = `Workspace '${workspaceHint}' not found`
-					if (mention.endsWith("/")) {
-						parsedText += `\n\n<folder_content path="${mentionPath}" workspace="${workspaceHint}">\nError fetching content: ${errorMsg}\n</folder_content>`
-					} else {
-						parsedText += `\n\n<file_content path="${mentionPath}" workspace="${workspaceHint}">\nError fetching content: ${errorMsg}\n</file_content>`
-					}
-					telemetryService.captureMentionFailed(mentionType, "not_found", errorMsg)
-				} else {
-					try {
-						const content = await getFileOrFolderContent(mentionPath, targetRoot.path)
-						if (mention.endsWith("/")) {
-							parsedText += `\n\n<folder_content path="${mentionPath}" workspace="${workspaceHint}">\n${content}\n</folder_content>`
-						} else {
-							parsedText += `\n\n<file_content path="${mentionPath}" workspace="${workspaceHint}">\n${content}\n</file_content>`
-							if (fileContextTracker) {
-								await fileContextTracker.trackFileContext(mentionPath, "file_mentioned")
-							}
-						}
-						telemetryService.captureMentionUsed(mentionType, content.length)
-					} catch (error) {
-						if (mention.endsWith("/")) {
-							parsedText += `\n\n<folder_content path="${mentionPath}" workspace="${workspaceHint}">\nError fetching content: ${error.message}\n</folder_content>`
-						} else {
-							parsedText += `\n\n<file_content path="${mentionPath}" workspace="${workspaceHint}">\nError fetching content: ${error.message}\n</file_content>`
-						}
-						let errorType: "not_found" | "permission_denied" | "unknown" = "unknown"
-						if (error.message.includes("ENOENT") || error.message.includes("Failed to access")) {
-							errorType = "not_found"
-						} else if (error.message.includes("EACCES") || error.message.includes("permission")) {
-							errorType = "permission_denied"
-						}
-						telemetryService.captureMentionFailed(mentionType, errorType, error.message)
-					}
-				}
-			} else {
-				// Legacy single workspace mode
-				try {
-					const content = await getFileOrFolderContent(mentionPath, cwd)
-					if (mention.endsWith("/")) {
-						parsedText += `\n\n<folder_content path="${mentionPath}">\n${content}\n</folder_content>`
-					} else {
-						parsedText += `\n\n<file_content path="${mentionPath}">\n${content}\n</file_content>`
-						if (fileContextTracker) {
-							await fileContextTracker.trackFileContext(mentionPath, "file_mentioned")
-						}
-					}
-					telemetryService.captureMentionUsed(mentionType, content.length)
-				} catch (error) {
-					if (mention.endsWith("/")) {
-						parsedText += `\n\n<folder_content path="${mentionPath}">\nError fetching content: ${error.message}\n</folder_content>`
-					} else {
-						parsedText += `\n\n<file_content path="${mentionPath}">\nError fetching content: ${error.message}\n</file_content>`
-					}
-					let errorType: "not_found" | "permission_denied" | "unknown" = "unknown"
-					if (error.message.includes("ENOENT") || error.message.includes("Failed to access")) {
-						errorType = "not_found"
-					} else if (error.message.includes("EACCES") || error.message.includes("permission")) {
-						errorType = "permission_denied"
-					}
-					telemetryService.captureMentionFailed(mentionType, errorType, error.message)
-				}
+			if (fileContextTracker) {
+				await fileContextTracker.trackFileContext(mentionPath, "file_mentioned")
 			}
+			telemetryService.captureMentionUsed(mentionType, mentionPath.length)
 		} else if (mention === "problems") {
 			try {
 				const problems = await getWorkspaceProblems()
@@ -329,62 +201,6 @@ export async function parseMentions(
 	}
 
 	return parsedText
-}
-
-async function getFileOrFolderContent(mentionPath: string, cwd: string): Promise<string> {
-	const absPath = path.resolve(cwd, mentionPath)
-
-	try {
-		const stats = await fs.stat(absPath)
-
-		if (stats.isFile()) {
-			const isBinary = await isBinaryFile(absPath).catch(() => false)
-			if (isBinary) {
-				return "(Binary file, unable to display content)"
-			}
-			const content = await extractTextFromFile(absPath)
-			return content
-		}
-		if (stats.isDirectory()) {
-			const entries = await fs.readdir(absPath, { withFileTypes: true })
-			let folderContent = ""
-			const fileContentPromises: Promise<string | undefined>[] = []
-			entries.forEach((entry, index) => {
-				const isLast = index === entries.length - 1
-				const linePrefix = isLast ? "└── " : "├── "
-				if (entry.isFile()) {
-					folderContent += `${linePrefix}${entry.name}\n`
-					const filePath = path.join(mentionPath, entry.name)
-					const absoluteFilePath = path.resolve(absPath, entry.name)
-					// const relativeFilePath = path.relative(cwd, absoluteFilePath);
-					fileContentPromises.push(
-						(async () => {
-							try {
-								const isBinary = await isBinaryFile(absoluteFilePath).catch(() => false)
-								if (isBinary) {
-									return undefined
-								}
-								const content = await extractTextFromFile(absoluteFilePath)
-								return `<file_content path="${filePath.toPosix()}">\n${content}\n</file_content>`
-							} catch (_error) {
-								return undefined
-							}
-						})(),
-					)
-				} else if (entry.isDirectory()) {
-					folderContent += `${linePrefix}${entry.name}/\n`
-					// not recursively getting folder contents
-				} else {
-					folderContent += `${linePrefix}${entry.name}\n`
-				}
-			})
-			const fileContents = (await Promise.all(fileContentPromises)).filter((content) => content)
-			return `${folderContent}\n${fileContents.join("\n\n")}`.trim()
-		}
-		return `(Failed to read contents of ${mentionPath})`
-	} catch (error) {
-		throw new Error(`Failed to access path "${mentionPath}": ${error.message}`)
-	}
 }
 
 async function getWorkspaceProblems(): Promise<string> {

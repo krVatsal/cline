@@ -1,10 +1,7 @@
-import { exec, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { TrueForge } from "@truefoundry/trueforge-sdk";
-
-const execAsync = promisify(exec);
 import type {
 	AgentMessage,
 	AgentModelFinishReason,
@@ -341,27 +338,18 @@ export class TrueForgeHarness implements AgentHarness {
 			const envSection = envMatch ? `\n\n${envMatch[0]}` : "";
 			const cwd = this.resolveWorkspaceCwd(ctx);
 
-			const systemPrompt = `You are Zentrix, an autonomous software engineering assistant running directly inside VS Code on the user's computer.
-You assist users with all development tasks: writing code, creating and editing files, running tests, inspecting repositories, and executing terminal commands.
-You have FULL access to the user's workspace, file system, and terminal. You are NOT in a restricted sandbox.
-
+			const systemPrompt = `You are an expert software engineer working directly in the user's workspace.
 Current Workspace: ${cwd}${envSection}
 
-CRITICAL RULES:
-1. You do not have external function-calling or API tools enabled. Communicate purely using standard markdown text and code blocks.
-2. When creating, adding, or modifying files, ALWAYS format each file with:
-**File:** \`path/to/file.ext\`
-Followed immediately by the code block with the complete file contents:
-\`\`\`<language>
-<complete code>
-\`\`\`
-The integrated workspace manager automatically writes and saves these files directly to disk in the workspace.
-3. When the user asks you to inspect, read, clone, pull, test, build, run, or execute anything, ALWAYS provide the exact executable shell commands inside standard markdown bash blocks:
-\`\`\`bash
-git clone <repo-url>
-\`\`\`
-4. State clearly what files you created or what commands you provided.
-5. Never state that you cannot execute code, that you are sandboxed, or that you lack privileged access. You have full capability to run commands, create files, and inspect the workspace.`;
+Instructions:
+- Explore with search_workspace, list_dir, and read_file before proposing edits.
+- Never guess file paths or symbols.
+- Write a short "Context:" list (files chosen, one-line reason each) before the first edit.
+- Make the smallest change and do not touch unrelated code.
+- Use propose_edit for existing files and propose_write only for new files.
+- Update tests and docs when the request implies them.
+- If hunks were declined do not re-propose them.
+- Finish with a brief summary of the completed task.`;
 
 			const modelObj = ctx.config.model;
 			const requestedModel =
@@ -509,88 +497,13 @@ git clone <repo-url>
 			return ctx.finishRun("completed", undefined, "");
 		}
 
-		// Auto-discover and attach context for workspace files mentioned in the prompt
-		let turnInputContent = promptText;
-		const workspaceCwd = this.resolveWorkspaceCwd(ctx);
-		const fileCandidateRegex = /(?:^|[\s"'`(\[])([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]{1,10})(?:$|[\s"',`)\]:])/g;
-		const seenFiles = new Set<string>();
-		let fileContextBlocks = "";
-
-		let mFile: RegExpExecArray | null;
-		while ((mFile = fileCandidateRegex.exec(promptText)) !== null) {
-			const candidate = mFile[1].trim();
-			if (candidate.startsWith("http") || candidate.endsWith(".") || !candidate.includes(".")) {
-				continue;
-			}
-			const absPath = path.isAbsolute(candidate) ? candidate : path.resolve(workspaceCwd, candidate);
-			if (fs.existsSync(absPath) && !seenFiles.has(absPath)) {
-				try {
-					const stat = fs.statSync(absPath);
-					if (stat.isFile() && stat.size <= 250000) {
-						seenFiles.add(absPath);
-						const content = fs.readFileSync(absPath, "utf8");
-						const rel = path.relative(workspaceCwd, absPath) || candidate;
-						fileContextBlocks += `\n\n<file_content path="${rel}">\n${content}\n</file_content>`;
-					}
-				} catch {}
-			}
-		}
-
-		if (fileContextBlocks) {
-			turnInputContent = `${promptText}\n\nWorkspace File Context:${fileContextBlocks}`;
-		}
-
-		// 3. Helpers for autonomous multi-turn loop
-		const extractFiles = (text: string): Array<{ path: string; content: string }> => {
-			const files: Array<{ path: string; content: string }> = [];
-			const fileBlockRegex = /(?:\*\*File:\*\*|File:|(?:Create|Add|Update)\s+(?:the\s+)?file:?)\s*[`*]*([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)[`*]*[\s\S]*?```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)\r?\n```/gi;
-			let m: RegExpExecArray | null;
-			while ((m = fileBlockRegex.exec(text)) !== null) {
-				files.push({ path: m[1].trim(), content: m[2] });
-			}
-			if (files.length === 0) {
-				const commentRegex = /```(?:[a-zA-Z0-9_-]+)?\r?\n\s*(?:#|\/\/)\s*(?:File:\s*)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_-]+)\r?\n([\s\S]*?)\r?\n```/gi;
-				while ((m = commentRegex.exec(text)) !== null) {
-					files.push({ path: m[1].trim(), content: m[2] });
-				}
-			}
-			return files;
-		};
-
-		const extractCommands = (text: string): string[] => {
-			const regex = /```(?:bash|sh|shell|cmd|powershell|ps1|terminal)[ \t]*\r?\n([\s\S]*?)\r?\n```/gi;
-			const cmds: string[] = [];
-			let m: RegExpExecArray | null;
-			while ((m = regex.exec(text)) !== null) {
-				const lines = m[1]
-					.split("\n")
-					.map((l) => l.trim())
-					.filter((l) => l && !l.startsWith("#") && !l.startsWith("//"));
-				for (const line of lines) {
-					if (line) cmds.push(line);
-				}
-			}
-			return cmds;
-		};
-
-		const isInspectionCommand = (cmd: string): boolean => {
-			return /^(sed|cat|grep|find|findstr|dir|ls|type|head|tail|Get-Content|git\s+(status|diff|log|show|branch))\b/i.test(cmd.trim());
-		};
-
-		const trimmedPrompt = promptText.trim();
-		const isExecutionRequested =
-			!/^(create|write|add|generate|make|show|explain|how|why|what|describe|draft|implement|design)\b/i.test(trimmedPrompt) &&
-			(/^(do it|run them|run it|run that|do that|yes|go ahead|proceed|start it|run tests?|run build)\b/i.test(trimmedPrompt) ||
-			/^(pull|clone|execute|run|install|build|start)\s+/i.test(trimmedPrompt) ||
-			/^(pull|clone|execute|run|install|build)$/i.test(trimmedPrompt) ||
-			/(?:please\s+|can you\s+|could you\s+)(run|execute|pull|clone|install|build|do it|run them)\b/i.test(trimmedPrompt));
-
-		const maxIterations = 5;
-		let iteration = 0;
-		let nextTurnPrompt = turnInputContent;
+		// Prompt sent to the agent is user's promptText plus lightweight references only (no full file bodies)
+		const turnInputContent = promptText;
+		const nextTurnPrompt = turnInputContent;
 		let fullAccumulatedText = "";
-		const executedCommandsSet = new Set<string>();
 		const finishReason: AgentModelFinishReason = "stop";
+		const maxIterations = 1;
+		let iteration = 0;
 
 		// 4. Autonomous execution loop: runs turns, executes inspection/action commands, and completes work
 		try {
@@ -777,166 +690,7 @@ git clone <repo-url>
 					});
 				}
 
-				// Save any files produced in this turn
-				const filesToSave = extractFiles(turnAccumulatedText);
-				if (filesToSave.length > 0) {
-					const cwd = this.resolveWorkspaceCwd(ctx);
-					for (const file of filesToSave) {
-						try {
-							const fullPath = path.isAbsolute(file.path) ? file.path : path.resolve(cwd, file.path);
-							const dir = path.dirname(fullPath);
-							if (!fs.existsSync(dir)) {
-								fs.mkdirSync(dir, { recursive: true });
-							}
-							const fileExisted = fs.existsSync(fullPath);
-							const originalContent = fileExisted ? fs.readFileSync(fullPath, "utf8") : "";
-
-							fs.writeFileSync(fullPath, file.content, "utf8");
-							const relPath = path.relative(cwd, fullPath) || file.path;
-							const saveNotice = `\n\n⚡ **Saved file:** \`${relPath}\`\n`;
-							turnAccumulatedText += saveNotice;
-							await ctx.emit({
-								type: "assistant-text-delta",
-								snapshot: ctx.snapshot(),
-								iteration: ctx.snapshot().iteration,
-								text: saveNotice,
-								accumulatedText: fullAccumulatedText + turnAccumulatedText,
-							});
-
-							// Automatically open the actual file with inline diff review (green highlights and Accept/Reject buttons)
-							try {
-								const vscode = (globalThis as any).vscode || (typeof require === "function" ? require("vscode") : undefined);
-								if (vscode?.Uri?.file) {
-									const fileUri = vscode.Uri.file(fullPath);
-									if (fileExisted && originalContent !== file.content) {
-										const inlineReview = (globalThis as any).clineInlineReview;
-										if (inlineReview && typeof inlineReview.startReview === "function") {
-											await inlineReview.startReview(fileUri, originalContent, file.content);
-										} else if (vscode.commands?.executeCommand) {
-											try {
-												await vscode.commands.executeCommand("cline.inlineReview.start", fileUri, originalContent, file.content);
-											} catch {
-												const doc = await vscode.workspace.openTextDocument(fileUri);
-												await vscode.window.showTextDocument(doc, { preview: false });
-											}
-										} else {
-											const doc = await vscode.workspace.openTextDocument(fileUri);
-											await vscode.window.showTextDocument(doc, { preview: false });
-										}
-									} else {
-										const doc = await vscode.workspace.openTextDocument(fileUri);
-										await vscode.window.showTextDocument(doc, { preview: false });
-									}
-								}
-							} catch (diffErr) {
-								console.warn("[TrueForgeHarness] Failed to open review:", diffErr);
-							}
-						} catch (writeErr: any) {
-							console.warn("[TrueForgeHarness] Failed to write file:", file.path, writeErr);
-						}
-					}
-				}
-
 				fullAccumulatedText += (fullAccumulatedText ? "\n\n" : "") + turnAccumulatedText;
-
-				// Check commands to run in this turn
-				let commandsToRun = extractCommands(turnAccumulatedText);
-				if (commandsToRun.length === 0 && isExecutionRequested && iteration === 1 && snapshot.messages.length > 0) {
-					for (let i = snapshot.messages.length - 1; i >= 0; i--) {
-						const msg = snapshot.messages[i];
-						if (msg.role === "assistant" && Array.isArray(msg.content)) {
-							const prevText = msg.content
-								.filter((c: any) => c.type === "text")
-								.map((c: any) => c.text)
-								.join("\n");
-							const prevCmds = extractCommands(prevText);
-							if (prevCmds.length > 0) {
-								commandsToRun = prevCmds;
-								break;
-							}
-						}
-					}
-				}
-
-				// Filter commands to execute: inspection commands are ALWAYS executed; other commands executed if requested
-				const cwd = this.resolveWorkspaceCwd(ctx);
-				const executedThisTurn: Array<{ cmd: string; output: string; isInspection: boolean }> = [];
-
-				for (const cmd of commandsToRun) {
-					if (cmd.startsWith("cd ") && commandsToRun.length > 1) {
-						continue;
-					}
-					const isInspect = isInspectionCommand(cmd);
-					if ((isInspect || isExecutionRequested) && !executedCommandsSet.has(cmd)) {
-						executedCommandsSet.add(cmd);
-
-						const execHeader = `\n\n⚡ **Executing in terminal:** \`${cmd}\`\n`;
-						fullAccumulatedText += execHeader;
-						await ctx.emit({
-							type: "assistant-text-delta",
-							snapshot: ctx.snapshot(),
-							iteration: ctx.snapshot().iteration,
-							text: execHeader,
-							accumulatedText: fullAccumulatedText,
-						});
-
-						let executedOutput = "";
-						try {
-							if (ctx.tools.has("run_commands") || ctx.tools.has("execute_command")) {
-								const toolName = ctx.tools.has("run_commands") ? "run_commands" : "execute_command";
-								const toolCall: any = {
-									type: "tool-call",
-									toolCallId: `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-									toolName,
-									input: { command: cmd, commands: [cmd] },
-								};
-								const prep = await ctx.prepareToolExecution(toolCall);
-								const toolMsg = await ctx.executePreparedTool(prep);
-								const out = toolMsg.content?.[0];
-								executedOutput =
-									out && typeof out === "object" && "output" in out
-										? typeof (out as any).output === "string"
-											? (out as any).output
-											: JSON.stringify((out as any).output)
-										: "";
-							} else {
-								const { stdout, stderr } = await execAsync(cmd, { cwd, timeout: 120000 });
-								executedOutput = (stdout || "") + (stderr ? `\n${stderr}` : "");
-							}
-						} catch (execErr: any) {
-							executedOutput = execErr?.message || String(execErr);
-						}
-
-						const formattedResult = executedOutput.trim()
-							? `\`\`\`\n${executedOutput.trim()}\n\`\`\`\n`
-							: `✓ Command completed successfully.\n`;
-						fullAccumulatedText += formattedResult;
-						await ctx.emit({
-							type: "assistant-text-delta",
-							snapshot: ctx.snapshot(),
-							iteration: ctx.snapshot().iteration,
-							text: formattedResult,
-							accumulatedText: fullAccumulatedText,
-						});
-
-						executedThisTurn.push({ cmd, output: executedOutput, isInspection: isInspect });
-					}
-				}
-
-				// Check if we should continue autonomously to the next turn:
-				const hasInspection = executedThisTurn.some((e) => e.isInspection);
-				if (hasInspection && filesToSave.length === 0 && iteration < maxIterations) {
-					// Feed back inspection command outputs to TrueForge so the model can complete the work!
-					nextTurnPrompt =
-						executedThisTurn
-							.filter((e) => e.isInspection)
-							.map((e) => `[Terminal output for \`${e.cmd}\`]:\n\`\`\`\n${e.output.slice(0, 10000)}\n\`\`\``)
-							.join("\n\n") +
-						"\n\nBased on this terminal output, now proceed to complete the user's task directly.";
-					continue;
-				}
-
-				// If no pending inspections, we are done!
 				break;
 			}
 
