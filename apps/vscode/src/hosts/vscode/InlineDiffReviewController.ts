@@ -101,28 +101,18 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 		})
 
 		// Register CodeLens provider
-		this.disposables.push(
-			vscode.languages.registerCodeLensProvider({ scheme: "file" }, this),
-		)
+		this.disposables.push(vscode.languages.registerCodeLensProvider({ scheme: "file" }, this))
 
 		// Register commands
 		this.disposables.push(
-			vscode.commands.registerCommand(
-				"cline.inlineReview.acceptHunk",
-				(uriStr: string, hunkId: number) => this.acceptHunk(uriStr, hunkId),
+			vscode.commands.registerCommand("cline.inlineReview.acceptHunk", (uriStr: string, hunkId: number) =>
+				this.acceptHunk(uriStr, hunkId),
 			),
-			vscode.commands.registerCommand(
-				"cline.inlineReview.rejectHunk",
-				(uriStr: string, hunkId: number) => this.rejectHunk(uriStr, hunkId),
+			vscode.commands.registerCommand("cline.inlineReview.rejectHunk", (uriStr: string, hunkId: number) =>
+				this.rejectHunk(uriStr, hunkId),
 			),
-			vscode.commands.registerCommand(
-				"cline.inlineReview.acceptAll",
-				(uriStr: string) => this.acceptAll(uriStr),
-			),
-			vscode.commands.registerCommand(
-				"cline.inlineReview.rejectAll",
-				(uriStr: string) => this.rejectAll(uriStr),
-			),
+			vscode.commands.registerCommand("cline.inlineReview.acceptAll", (uriStr: string) => this.acceptAll(uriStr)),
+			vscode.commands.registerCommand("cline.inlineReview.rejectAll", (uriStr: string) => this.rejectAll(uriStr)),
 			vscode.commands.registerCommand(
 				"cline.inlineReview.start",
 				(fileUri: vscode.Uri, originalContent: string, newContent: string) =>
@@ -286,7 +276,7 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 
 		const replacementText = hunk.originalText
 
-		const workEditor = editor ?? await vscode.window.showTextDocument(doc, { preview: false })
+		const workEditor = editor ?? (await vscode.window.showTextDocument(doc, { preview: false }))
 		const success = await workEditor.edit((builder) => {
 			builder.replace(new vscode.Range(startPos, endPos), replacementText)
 		})
@@ -339,7 +329,7 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 
 		const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uriStr)
 		const doc = editor ? editor.document : await vscode.workspace.openTextDocument(review.uri)
-		const workEditor = editor ?? await vscode.window.showTextDocument(doc, { preview: false })
+		const workEditor = editor ?? (await vscode.window.showTextDocument(doc, { preview: false }))
 
 		const fullRange = new vscode.Range(0, 0, doc.lineCount, 0)
 		const success = await workEditor.edit((builder) => {
