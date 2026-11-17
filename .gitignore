@@ -36,6 +36,7 @@ coverage-unit
 .github/act/.secrets
 
 .worktrees
+apps/vscode/flask/
 
 ## Generated files ##
 apps/vscode/src/generated/

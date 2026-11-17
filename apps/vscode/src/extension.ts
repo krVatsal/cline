@@ -47,6 +47,7 @@ import {
 } from "./hosts/vscode/review/VscodeCommentReviewController"
 import { DIFF_VIEW_URI_SCHEME, diffContentProvider } from "./hosts/vscode/VscodeDiffContentProvider"
 import { EDIT_PREVIEW_URI_SCHEME, editPreviewContentProvider, VscodeEditPreview } from "./hosts/vscode/VscodeEditPreview"
+import { InlineDiffReviewController } from "./hosts/vscode/InlineDiffReviewController"
 import { VscodeWebviewProvider } from "./hosts/vscode/VscodeWebviewProvider"
 import { exportVSCodeStorageToSharedFiles } from "./hosts/vscode/vscode-to-file-migration"
 import { ExtensionRegistryInfo } from "./registry"
@@ -156,6 +157,11 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.workspace.registerTextDocumentContentProvider(EDIT_PREVIEW_URI_SCHEME, editPreviewContentProvider),
 	)
+
+	// Register the inline diff review controller with accept/reject CodeLens and decorations
+	const inlineReviewController = InlineDiffReviewController.getInstance()
+	context.subscriptions.push(inlineReviewController)
+	;(globalThis as any).clineInlineReview = inlineReviewController
 
 	const handleUri = async (uri: vscode.Uri) => {
 		const url = decodeURIComponent(uri.toString())

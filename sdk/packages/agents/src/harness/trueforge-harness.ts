@@ -803,26 +803,33 @@ git clone <repo-url>
 								accumulatedText: fullAccumulatedText + turnAccumulatedText,
 							});
 
-							// Automatically open the diff view in VS Code so the user can inspect changes side-by-side
+							// Automatically open the actual file with inline diff review (green highlights and Accept/Reject buttons)
 							try {
 								const vscode = (globalThis as any).vscode || (typeof require === "function" ? require("vscode") : undefined);
-								if (vscode?.Uri?.file && vscode?.commands?.executeCommand) {
+								if (vscode?.Uri?.file) {
 									const fileUri = vscode.Uri.file(fullPath);
 									if (fileExisted && originalContent !== file.content) {
-										const leftUri = vscode.Uri.parse(`cline-diff:${encodeURIComponent(relPath)} (Original)`).with({
-											query: Buffer.from(originalContent, "utf8").toString("base64"),
-										});
-										const title = `${path.basename(fullPath)}: Original ↔ Modified`;
-										await vscode.commands.executeCommand("vscode.diff", leftUri, fileUri, title, {
-											preview: false,
-										});
+										const inlineReview = (globalThis as any).clineInlineReview;
+										if (inlineReview && typeof inlineReview.startReview === "function") {
+											await inlineReview.startReview(fileUri, originalContent, file.content);
+										} else if (vscode.commands?.executeCommand) {
+											try {
+												await vscode.commands.executeCommand("cline.inlineReview.start", fileUri, originalContent, file.content);
+											} catch {
+												const doc = await vscode.workspace.openTextDocument(fileUri);
+												await vscode.window.showTextDocument(doc, { preview: false });
+											}
+										} else {
+											const doc = await vscode.workspace.openTextDocument(fileUri);
+											await vscode.window.showTextDocument(doc, { preview: false });
+										}
 									} else {
 										const doc = await vscode.workspace.openTextDocument(fileUri);
 										await vscode.window.showTextDocument(doc, { preview: false });
 									}
 								}
 							} catch (diffErr) {
-								console.warn("[TrueForgeHarness] Failed to open diff:", diffErr);
+								console.warn("[TrueForgeHarness] Failed to open review:", diffErr);
 							}
 						} catch (writeErr: any) {
 							console.warn("[TrueForgeHarness] Failed to write file:", file.path, writeErr);
