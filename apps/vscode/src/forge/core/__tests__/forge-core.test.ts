@@ -74,9 +74,9 @@ describe("forge/core - Path Safety", () => {
 		expect(result.safe).toBe(false);
 	});
 
-	it("rejects empty root or empty path", () => {
+	it("rejects empty root or invalid path type", () => {
 		expect(resolveSafePath("", "foo.txt").safe).toBe(false);
-		expect(resolveSafePath(tempDir, "").safe).toBe(false);
+		expect(resolveSafePath(tempDir, null as any).safe).toBe(false);
 	});
 });
 

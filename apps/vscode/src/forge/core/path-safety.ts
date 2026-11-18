@@ -17,12 +17,21 @@ export function resolveSafePath(root: string, targetPath: string): PathSafetyRes
 	if (!root) {
 		return { safe: false, error: "Root directory must not be empty" };
 	}
-	if (!targetPath || typeof targetPath !== "string") {
-		return { safe: false, error: "Target path must be a non-empty string" };
+	if (typeof targetPath !== "string") {
+		return { safe: false, error: "Target path must be a string" };
 	}
 
 	const normalizedRoot = path.resolve(root);
 	const normalizedTarget = normalizePath(targetPath);
+
+	// Empty string or '.' represents the workspace root itself
+	if (normalizedTarget === "" || normalizedTarget === ".") {
+		return {
+			safe: true,
+			resolvedPath: normalizedRoot,
+			relativePath: "",
+		};
+	}
 
 	// Reject paths with obvious suspicious segments before resolution
 	const segments = normalizedTarget.split("/");
