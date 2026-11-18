@@ -343,6 +343,31 @@ export class TrueForgeHarness implements AgentHarness {
 
 		const cwd = this.resolveWorkspaceCwd(ctx);
 
+		// Always ensure Forge Editor MCP server is registered with current port and token
+		const editorServer = (globalThis as any).forgeEditorServer;
+		if (editorServer?.url && editorServer?.token) {
+			try {
+				await this.withClient((c) =>
+					c.settings.mcpServers.createOrUpdate({
+						manifest: {
+							type: "remote",
+							name: "forge-editor",
+							description: "Local workspace file operations and diff proposals",
+							url: editorServer.url,
+							auth: {
+								type: "header",
+								headers: {
+									Authorization: `Bearer ${editorServer.token}`,
+								},
+							},
+						},
+					}),
+				);
+			} catch (mcpErr) {
+				console.warn("[TrueForgeHarness] Failed to register forge-editor MCP server:", mcpErr);
+			}
+		}
+
 		// 1. Resolve or create TrueForge session for this conversation
 		let sessionId = TrueForgeHarness.sessionsByConversation.get(conversationId);
 		if (!sessionId) {
@@ -352,6 +377,25 @@ export class TrueForgeHarness implements AgentHarness {
 
 			const systemPrompt = `You are an expert software engineer working directly in the user's workspace.
 Current Workspace: ${cwd}${envSection}
+
+MCP Tools Specification:
+The MCP server "forge-editor" provides all workspace operations.
+When calling tools via call_tool, you MUST ALWAYS provide all required parameters:
+- "mcp_server": "forge-editor"
+- "tool_name": "<tool_name>"
+- "input": { <parameters> }
+
+Available tools on "forge-editor":
+1. read_file:
+   mcp_server: "forge-editor", tool_name: "read_file", input: { "path": "path/to/file" }
+2. list_dir:
+   mcp_server: "forge-editor", tool_name: "list_dir", input: { "path": "optional/dir/path" }
+3. search_workspace:
+   mcp_server: "forge-editor", tool_name: "search_workspace", input: { "query": "text to find" }
+4. propose_edit:
+   mcp_server: "forge-editor", tool_name: "propose_edit", input: { "path": "path/to/file", "edits": [{ "old_text": "...", "new_text": "..." }] }
+5. propose_write:
+   mcp_server: "forge-editor", tool_name: "propose_write", input: { "path": "path/to/new_file", "content": "..." }
 
 Instructions:
 - Explore with search_workspace, list_dir, and read_file before proposing edits.
@@ -373,31 +417,6 @@ Instructions:
 
 			const modelName = await this.resolveModelName(requestedModel);
 
-			// Register Forge Editor MCP server if running in extension host
-			const editorServer = (globalThis as any).forgeEditorServer;
-			if (editorServer?.url && editorServer?.token) {
-				try {
-					await this.withClient((c) =>
-						c.settings.mcpServers.createOrUpdate({
-							manifest: {
-								type: "remote",
-								name: "forge-editor",
-								description: "Local workspace file operations and diff proposals",
-								url: editorServer.url,
-								auth: {
-									type: "header",
-									headers: {
-										Authorization: `Bearer ${editorServer.token}`,
-									},
-								},
-							},
-						}),
-					);
-				} catch (mcpErr) {
-					console.warn("[TrueForgeHarness] Failed to register forge-editor MCP server:", mcpErr);
-				}
-			}
-
 			const coreTools = ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
 			const vscode = (globalThis as any).vscode;
 			const vsConfig = vscode?.workspace?.getConfiguration?.("cline");
@@ -417,6 +436,7 @@ Instructions:
 									mcpServers: [
 										{
 											name: "forge-editor",
+											preload: true,
 											enableTools: coreTools,
 											preloadTools: coreTools,
 											requireApprovalForTools: ["propose_edit", "propose_write"],
@@ -700,12 +720,15 @@ Instructions:
 						const sourceMessage = indexedMessages.get(tc.sourceEventId);
 						const matchedToolCall = sourceMessage?.toolCalls?.find((c: any) => c.id === toolCallId);
 
-						const fnName = matchedToolCall?.function?.name || matchedToolCall?.name || matchedToolCall?.toolInfo?.name;
+						const rawFnName = matchedToolCall?.function?.name || matchedToolCall?.name || matchedToolCall?.toolInfo?.name;
 						let fnArgs: any = {};
 						try {
 							const raw = matchedToolCall?.function?.arguments || matchedToolCall?.arguments;
 							fnArgs = typeof raw === "string" ? JSON.parse(raw) : (raw || {});
 						} catch {}
+
+						const fnName = rawFnName === "call_tool" ? fnArgs.tool_name : rawFnName;
+						const toolArgs = (rawFnName === "call_tool" && fnArgs.input) ? fnArgs.input : fnArgs;
 
 						let decision: { allow: boolean; acceptedHunkIds?: string[]; denyReason?: string } = {
 							allow: false,
@@ -721,8 +744,8 @@ Instructions:
 						let proposalResult: any = null;
 
 						if (fnName === "propose_edit" && createEditProposal) {
-							const relPath = fnArgs.path;
-							const edits = fnArgs.edits;
+							const relPath = toolArgs?.path;
+							const edits = toolArgs?.edits;
 							const absPath = path.resolve(cwd, relPath);
 							if (fs.existsSync(absPath)) {
 								const orig = fs.readFileSync(absPath, "utf-8");
@@ -732,8 +755,8 @@ Instructions:
 								}
 							}
 						} else if (fnName === "propose_write" && createWriteProposal) {
-							const relPath = fnArgs.path;
-							const content = fnArgs.content || "";
+							const relPath = toolArgs?.path;
+							const content = toolArgs?.content || "";
 							const p = createWriteProposal(relPath, content, false);
 							if (p.result) {
 								proposalResult = p.result;
@@ -741,7 +764,7 @@ Instructions:
 						}
 
 						if (proposalResult && inlineReview && vscode) {
-							const relPath = fnArgs.path;
+							const relPath = toolArgs?.path;
 							const absPath = path.resolve(cwd, relPath);
 							const fileUri = vscode.Uri.file(absPath);
 							const orig = fs.existsSync(absPath) ? fs.readFileSync(absPath, "utf-8") : "";

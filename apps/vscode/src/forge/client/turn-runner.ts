@@ -113,6 +113,7 @@ export class TurnRunner {
 					mcpServers: [
 						{
 							name: "forge-editor",
+							preload: true,
 							enableTools: coreTools,
 							preloadTools: coreTools,
 							requireApprovalForTools: ["propose_edit", "propose_write"],
@@ -246,10 +247,13 @@ export class TurnRunner {
 					for (const item of pendingList) {
 						const detail: PendingToolApprovalDetail = { ...item };
 
-						// Prepare proposal detail for diff visualization
-						if (item.toolName === "propose_edit") {
-							const relPath = item.arguments?.path;
-							const edits = item.arguments?.edits;
+						// Prepare proposal detail for diff visualization (handling both direct and call_tool meta-calls)
+						const fnName = item.toolName === "call_tool" ? item.arguments?.tool_name : item.toolName;
+						const fnArgs = (item.toolName === "call_tool" && item.arguments?.input) ? item.arguments.input : item.arguments;
+
+						if (fnName === "propose_edit") {
+							const relPath = fnArgs?.path;
+							const edits = fnArgs?.edits;
 							const safe = resolveSafePath(this.editorServer.workspaceRoot, relPath || "");
 
 							if (safe.safe && safe.resolvedPath && fs.existsSync(safe.resolvedPath)) {
@@ -263,9 +267,9 @@ export class TurnRunner {
 							} else {
 								detail.error = safe.error || `File not found: ${relPath}`;
 							}
-						} else if (item.toolName === "propose_write") {
-							const relPath = item.arguments?.path;
-							const content = item.arguments?.content || "";
+						} else if (fnName === "propose_write") {
+							const relPath = fnArgs?.path;
+							const content = fnArgs?.content || "";
 							const prop = createWriteProposal(relPath, content, false);
 							if (prop.result) {
 								detail.proposal = prop.result;

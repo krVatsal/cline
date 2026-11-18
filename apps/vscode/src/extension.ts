@@ -50,6 +50,7 @@ import { EDIT_PREVIEW_URI_SCHEME, editPreviewContentProvider, VscodeEditPreview 
 import { InlineDiffReviewController } from "./hosts/vscode/InlineDiffReviewController"
 import { startForgeEditorServer, ForgeEditorServer } from "./forge/server"
 import { changeLog, reviewBroker, createEditProposal, createWriteProposal } from "./forge/core"
+import { TrueForge } from "@truefoundry/trueforge-sdk"
 import * as fs from "node:fs"
 import { VscodeWebviewProvider } from "./hosts/vscode/VscodeWebviewProvider"
 import { exportVSCodeStorageToSharedFiles } from "./hosts/vscode/vscode-to-file-migration"
@@ -179,8 +180,27 @@ export async function activate(context: vscode.ExtensionContext) {
 		editorServer = await startForgeEditorServer({ workspaceRoot: rootPath })
 		;(globalThis as any).forgeEditorServer = editorServer
 		Logger.log(`[Forge] Editor MCP Server running at ${editorServer.url}`)
+
+		// Re-register with TrueForge on every extension start because port and token are fresh
+		const tfBaseUrl = vscode.workspace.getConfiguration("cline").get("trueforge.baseUrl") || process.env.TRUEFORGE_BASE_URL || "http://127.0.0.1:8790"
+		const tfClient = new TrueForge({ baseUrl: String(tfBaseUrl), environment: String(tfBaseUrl) })
+		await tfClient.settings.mcpServers.createOrUpdate({
+			manifest: {
+				type: "remote",
+				name: "forge-editor",
+				description: "Local workspace file operations and diff proposals",
+				url: editorServer.url,
+				auth: {
+					type: "header",
+					headers: {
+						Authorization: `Bearer ${editorServer.token}`,
+					},
+				},
+			},
+		})
+		Logger.log(`[Forge] Successfully registered forge-editor MCP server with TrueForge at ${tfBaseUrl}`)
 	} catch (err) {
-		Logger.error(`[Forge] Failed to start Editor MCP Server:`, err)
+		Logger.error(`[Forge] Failed to start/register Editor MCP Server:`, err)
 	}
 
 	context.subscriptions.push(
