@@ -128,6 +128,11 @@
 		},
 		"commands": [
 			{
+				"command": "cline.undoForgeChange",
+				"title": "Undo last Forge change",
+				"category": "Zentrix"
+			},
+			{
 				"command": "cline.plusButtonClicked",
 				"title": "New Task",
 				"icon": "$(add)"
@@ -337,7 +342,23 @@
 		},
 		"configuration": {
 			"title": "Cline",
-			"properties": {}
+			"properties": {
+				"cline.trueforge.baseUrl": {
+					"type": "string",
+					"default": "http://localhost:8790",
+					"description": "Base URL for the TrueForge agent server"
+				},
+				"cline.trueforge.modelId": {
+					"type": "string",
+					"default": "groq/openai-gpt-oss-120b",
+					"description": "Primary model ID for TrueForge (e.g. groq/openai-gpt-oss-120b)"
+				},
+				"cline.trueforge.fallbackModelId": {
+					"type": "string",
+					"default": "",
+					"description": "Fallback model ID to use if the primary model fails"
+				}
+			}
 		}
 	},
 	"scripts": {

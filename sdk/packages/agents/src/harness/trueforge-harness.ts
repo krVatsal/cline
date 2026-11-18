@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { TrueForge } from "@truefoundry/trueforge-sdk";
+import { TrueForge, isEventDelta, mergeEventDelta } from "@truefoundry/trueforge-sdk";
 import type {
 	AgentMessage,
 	AgentModelFinishReason,
@@ -49,9 +49,13 @@ export class TrueForgeHarness implements AgentHarness {
 	private static isSpawning = false;
 
 	constructor(options: TrueForgeHarnessOptions = {}) {
+		const vscode = (globalThis as any).vscode;
+		const vsConfig = vscode?.workspace?.getConfiguration?.("cline");
+
 		const baseUrl =
 			options.baseUrl ||
 			process.env.TRUEFORGE_BASE_URL ||
+			vsConfig?.get?.("trueforge.baseUrl") ||
 			"http://127.0.0.1:8790";
 		const token =
 			options.token ||
@@ -65,7 +69,7 @@ export class TrueForgeHarness implements AgentHarness {
 		});
 
 		// Fallback client for localhost / IPv6 loopback on Windows if 127.0.0.1 fails
-		if (!options.baseUrl && !process.env.TRUEFORGE_BASE_URL) {
+		if (!options.baseUrl && !process.env.TRUEFORGE_BASE_URL && !vsConfig?.get?.("trueforge.baseUrl")) {
 			this.fallbackClient = new TrueForge({
 				baseUrl: "http://localhost:8790",
 				environment: "http://localhost:8790",
@@ -75,7 +79,8 @@ export class TrueForgeHarness implements AgentHarness {
 
 		this.configuredModelName =
 			options.model ||
-			process.env.TRUEFORGE_MODEL;
+			process.env.TRUEFORGE_MODEL ||
+			vsConfig?.get?.("trueforge.modelId");
 	}
 
 	private static findNodeExecutable(): string {
@@ -251,6 +256,12 @@ export class TrueForgeHarness implements AgentHarness {
 		if (this.configuredModelName?.trim()) {
 			return this.configuredModelName.trim();
 		}
+		const vscode = (globalThis as any).vscode;
+		const vsConfig = vscode?.workspace?.getConfiguration?.("cline");
+		const configModel = vsConfig?.get?.("trueforge.modelId");
+		if (typeof configModel === "string" && configModel.trim()) {
+			return configModel.trim();
+		}
 		const envModel = process.env.TRUEFORGE_MODEL;
 		if (envModel?.trim()) {
 			return envModel.trim();
@@ -297,7 +308,7 @@ export class TrueForgeHarness implements AgentHarness {
 		}
 
 		try {
-			const vscode = (globalThis as any).vscode || (typeof require === "function" ? require("vscode") : undefined);
+			const vscode = (globalThis as any).vscode;
 			const wsFolder = vscode?.workspace?.workspaceFolders?.[0]?.uri?.fsPath;
 			if (wsFolder && fs.existsSync(wsFolder)) {
 				return wsFolder;
@@ -330,13 +341,14 @@ export class TrueForgeHarness implements AgentHarness {
 			snapshot.agentId ||
 			"default";
 
+		const cwd = this.resolveWorkspaceCwd(ctx);
+
 		// 1. Resolve or create TrueForge session for this conversation
 		let sessionId = TrueForgeHarness.sessionsByConversation.get(conversationId);
 		if (!sessionId) {
 			const basePrompt = (typeof ctx.config.systemPrompt === "string" ? ctx.config.systemPrompt : "").trim();
 			const envMatch = basePrompt.match(/<env>[\s\S]*?<\/env>/i);
 			const envSection = envMatch ? `\n\n${envMatch[0]}` : "";
-			const cwd = this.resolveWorkspaceCwd(ctx);
 
 			const systemPrompt = `You are an expert software engineer working directly in the user's workspace.
 Current Workspace: ${cwd}${envSection}
@@ -361,29 +373,90 @@ Instructions:
 
 			const modelName = await this.resolveModelName(requestedModel);
 
-			const sessionResponse = await this.withClient((c) =>
-				c.sessions.create({
-					agent: {
-						spec: {
-							instructions: systemPrompt,
-							model: {
-								name: modelName,
+			// Register Forge Editor MCP server if running in extension host
+			const editorServer = (globalThis as any).forgeEditorServer;
+			if (editorServer?.url && editorServer?.token) {
+				try {
+					await this.withClient((c) =>
+						c.settings.mcpServers.createOrUpdate({
+							manifest: {
+								type: "remote",
+								name: "forge-editor",
+								description: "Local workspace file operations and diff proposals",
+								url: editorServer.url,
+								auth: {
+									type: "header",
+									headers: {
+										Authorization: `Bearer ${editorServer.token}`,
+									},
+								},
 							},
-							config: {
-								askUserQuestions: { enabled: false },
-								dynamicSubAgents: { enabled: false },
+						}),
+					);
+				} catch (mcpErr) {
+					console.warn("[TrueForgeHarness] Failed to register forge-editor MCP server:", mcpErr);
+				}
+			}
+
+			const coreTools = ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
+			const vscode = (globalThis as any).vscode;
+			const vsConfig = vscode?.workspace?.getConfiguration?.("cline");
+
+			const createSpecForModel = (model: string) => ({
+				agent: {
+					spec: {
+						instructions: systemPrompt,
+						model: {
+							name: model,
+							params: {
+								parallelToolCalls: false,
+							},
+						},
+						...(editorServer
+							? {
+									mcpServers: [
+										{
+											name: "forge-editor",
+											enableTools: coreTools,
+											preloadTools: coreTools,
+											requireApprovalForTools: ["propose_edit", "propose_write"],
+										},
+									],
+								}
+							: {}),
+						config: {
+							iterationLimit: 30,
+							askUserQuestions: { enabled: false },
+							dynamicSubAgents: { enabled: false },
+							contextManagement: {
+								compaction: {
+									enabled: true,
+								},
 							},
 						},
 					},
-				}),
-			);
+				},
+			});
+
+			let sessionResponse: any;
+			try {
+				sessionResponse = await this.withClient((c) => c.sessions.create(createSpecForModel(modelName)));
+			} catch (primaryErr: any) {
+				const fallbackModel = vsConfig?.get?.("trueforge.fallbackModelId") || process.env.TRUEFORGE_FALLBACK_MODEL;
+				if (typeof fallbackModel === "string" && fallbackModel.trim() && fallbackModel.trim() !== modelName) {
+					console.warn(`[TrueForgeHarness] Primary model ${modelName} failed. Falling back to ${fallbackModel.trim()}...`);
+					sessionResponse = await this.withClient((c) => c.sessions.create(createSpecForModel(fallbackModel.trim())));
+				} else {
+					throw primaryErr;
+				}
+			}
 
 			const createdId = sessionResponse.data?.id;
-			if (!createdId) {
+			if (!createdId || typeof createdId !== "string") {
 				throw new Error("TrueForge did not return a session ID");
 			}
 			sessionId = createdId;
-			TrueForgeHarness.sessionsByConversation.set(conversationId, sessionId);
+			TrueForgeHarness.sessionsByConversation.set(conversationId, createdId);
 		}
 
 		// 2. Extract user input text
@@ -502,94 +575,47 @@ Instructions:
 		const nextTurnPrompt = turnInputContent;
 		let fullAccumulatedText = "";
 		const finishReason: AgentModelFinishReason = "stop";
-		const maxIterations = 1;
-		let iteration = 0;
+
+		if (!sessionId) {
+			throw new Error("No TrueForge session available");
+		}
 
 		// 4. Autonomous execution loop: runs turns, executes inspection/action commands, and completes work
 		try {
-			while (iteration < maxIterations) {
+			let turnInputs: any[] = [
+				{
+					type: "user.message",
+					content: nextTurnPrompt,
+				},
+			];
+
+			const indexedMessages = new Map<string, any>();
+
+			while (true) {
 				ctx.throwIfAborted();
-				iteration++;
 
 				const stream = await this.withClient((c) =>
 					c.sessions.createTurnStream(sessionId, {
-						input: [
-							{
-								type: "user.message",
-								content: nextTurnPrompt,
-							},
-						],
+						input: turnInputs,
 					}),
 				);
 
 				let turnAccumulatedText = "";
 				let accumulatedReasoning = "";
+				let pendingApprovalEvent: any = null;
 
-				const pendingToolCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
-
-				const recordToolCallChunks = (toolCalls: any[]) => {
-					if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
-					for (const tc of toolCalls) {
-						const idx = typeof tc.index === "number" ? tc.index : 0;
-						let existing = pendingToolCalls.get(idx);
-						if (!existing) {
-							existing = { arguments: "" };
-							pendingToolCalls.set(idx, existing);
-						}
-						if (tc.id) existing.id = tc.id;
-						const fnName = tc.function?.name || tc.toolInfo?.name || tc.name;
-						if (fnName) existing.name = fnName;
-						const fnArgs = tc.function?.arguments || tc.arguments;
-						if (fnArgs) existing.arguments += fnArgs;
-					}
-				};
-
-				const flushToolCalls = async () => {
-					for (const [, tc] of pendingToolCalls) {
-						const fnName = tc.name;
-						if (!fnName) continue;
-						let parsedArgs: any = {};
-						try {
-							parsedArgs = typeof tc.arguments === "string" ? JSON.parse(tc.arguments) : tc.arguments;
-						} catch {}
-
-						if (fnName === "ask_user_question") {
-							const question = parsedArgs?.question || "Please clarify:";
-							const options = Array.isArray(parsedArgs?.options)
-								? parsedArgs.options.map((opt: string) => `• ${opt}`).join("\n")
-								: "";
-							const formatted = `\n\n**${question}**\n\n${options}\n`;
-							if (!turnAccumulatedText.includes(question)) {
-								turnAccumulatedText += formatted;
-								await ctx.emit({
-									type: "assistant-text-delta",
-									snapshot: ctx.snapshot(),
-									iteration: ctx.snapshot().iteration,
-									text: formatted,
-									accumulatedText: fullAccumulatedText + turnAccumulatedText,
-								});
-							}
-						} else if (fnName === "run_commands" || fnName === "execute_command") {
-							const cmds = parsedArgs?.commands || (parsedArgs?.command ? [parsedArgs.command] : []);
-							const cmdText = cmds.length > 0 ? `\n\n\`\`\`bash\n${cmds.join("\n")}\n\`\`\`\n` : "";
-							if (cmdText && !turnAccumulatedText.includes(cmds[0])) {
-								turnAccumulatedText += cmdText;
-								await ctx.emit({
-									type: "assistant-text-delta",
-									snapshot: ctx.snapshot(),
-									iteration: ctx.snapshot().iteration,
-									text: cmdText,
-									accumulatedText: fullAccumulatedText + turnAccumulatedText,
-								});
-							}
-						}
-					}
-				};
-
-				for await (const event of stream) {
+				for await (const chunk of ((stream as any).withMetadata ? (stream as any).withMetadata() : stream)) {
 					ctx.throwIfAborted();
+					const event = chunk.data ?? chunk;
 
 					if (event.type === "model.message.delta") {
+						if (event.id && isEventDelta(event)) {
+							const existing = indexedMessages.get(event.id);
+							if (existing) {
+								mergeEventDelta(existing, event);
+							}
+						}
+
 						const reasoning = (event as any).reasoningContent;
 						if (reasoning) {
 							accumulatedReasoning += reasoning;
@@ -613,12 +639,8 @@ Instructions:
 								accumulatedText: fullAccumulatedText + turnAccumulatedText,
 							});
 						}
-
-						const toolCalls = (event as any).toolCalls;
-						if (toolCalls) {
-							recordToolCallChunks(toolCalls);
-						}
 					} else if (event.type === "model.message") {
+						indexedMessages.set(event.id, event);
 						const content = (event as any).content;
 						if (content && !turnAccumulatedText) {
 							turnAccumulatedText = content;
@@ -630,17 +652,8 @@ Instructions:
 								accumulatedText: fullAccumulatedText + turnAccumulatedText,
 							});
 						}
-
-						const toolCalls = (event as any).toolCalls;
-						if (toolCalls) {
-							recordToolCallChunks(toolCalls);
-						}
-					} else if (event.type === "tool.response_required") {
-						const toolCalls = (event as any).toolCalls;
-						if (toolCalls) {
-							recordToolCallChunks(toolCalls);
-						}
-						await flushToolCalls();
+					} else if (event.type === "tool.approval_required") {
+						pendingApprovalEvent = event;
 					} else if (event.type === "turn.done") {
 						const output = (event as any).state?.output;
 						if (output?.content && !turnAccumulatedText) {
@@ -653,12 +666,6 @@ Instructions:
 								accumulatedText: fullAccumulatedText + turnAccumulatedText,
 							});
 						}
-
-						const toolCalls = output?.toolCalls;
-						if (toolCalls) {
-							recordToolCallChunks(toolCalls);
-						}
-						await flushToolCalls();
 
 						if (event.state && "metrics" in event.state && event.state.metrics) {
 							const metrics = event.state.metrics as {
@@ -679,18 +686,136 @@ Instructions:
 					}
 				}
 
-				if (!turnAccumulatedText.trim()) {
-					turnAccumulatedText = "I'm ready to assist with your coding tasks, running commands, and workspace operations. What would you like to run or build?";
+				if (turnAccumulatedText) {
+					fullAccumulatedText += (fullAccumulatedText ? "\n\n" : "") + turnAccumulatedText;
+				}
+
+				// If an approval is required, pause, resolve proposals, show diff review to user, and resume turn
+				if (pendingApprovalEvent) {
+					const toolCalls = pendingApprovalEvent.toolCalls || [];
+					const approvalInputs: any[] = [];
+
+					for (const tc of toolCalls) {
+						const toolCallId = tc.id;
+						const sourceMessage = indexedMessages.get(tc.sourceEventId);
+						const matchedToolCall = sourceMessage?.toolCalls?.find((c: any) => c.id === toolCallId);
+
+						const fnName = matchedToolCall?.function?.name || matchedToolCall?.name || matchedToolCall?.toolInfo?.name;
+						let fnArgs: any = {};
+						try {
+							const raw = matchedToolCall?.function?.arguments || matchedToolCall?.arguments;
+							fnArgs = typeof raw === "string" ? JSON.parse(raw) : (raw || {});
+						} catch {}
+
+						let decision: { allow: boolean; acceptedHunkIds?: string[]; denyReason?: string } = {
+							allow: false,
+							denyReason: "No approval provider available",
+						};
+
+						const inlineReview = (globalThis as any).clineInlineReview;
+						const broker = (globalThis as any).forgeReviewBroker;
+						const vscode = (globalThis as any).vscode;
+						const createEditProposal = (globalThis as any).forgeCreateEditProposal;
+						const createWriteProposal = (globalThis as any).forgeCreateWriteProposal;
+
+						let proposalResult: any = null;
+
+						if (fnName === "propose_edit" && createEditProposal) {
+							const relPath = fnArgs.path;
+							const edits = fnArgs.edits;
+							const absPath = path.resolve(cwd, relPath);
+							if (fs.existsSync(absPath)) {
+								const orig = fs.readFileSync(absPath, "utf-8");
+								const p = createEditProposal(relPath, orig, edits || []);
+								if (p.result) {
+									proposalResult = p.result;
+								}
+							}
+						} else if (fnName === "propose_write" && createWriteProposal) {
+							const relPath = fnArgs.path;
+							const content = fnArgs.content || "";
+							const p = createWriteProposal(relPath, content, false);
+							if (p.result) {
+								proposalResult = p.result;
+							}
+						}
+
+						if (proposalResult && inlineReview && vscode) {
+							const relPath = fnArgs.path;
+							const absPath = path.resolve(cwd, relPath);
+							const fileUri = vscode.Uri.file(absPath);
+							const orig = fs.existsSync(absPath) ? fs.readFileSync(absPath, "utf-8") : "";
+
+							decision = await new Promise<{ allow: boolean; acceptedHunkIds?: string[]; denyReason?: string }>((resolve) => {
+								let settled = false;
+								const settle = (d: { allow: boolean; acceptedHunkIds?: string[]; denyReason?: string }) => {
+									if (!settled) {
+										settled = true;
+										resolve(d);
+									}
+								};
+
+								inlineReview.startReview(fileUri, orig, proposalResult.proposedContentLF, (dec: any) => {
+									settle(dec);
+								});
+
+								vscode.window.showInformationMessage(
+									`Agent proposed changes to ${relPath}. Review diff in editor:`,
+									"Accept All",
+									"Reject All",
+								).then((action: string | undefined) => {
+									if (action === "Accept All") {
+										inlineReview.acceptAll(fileUri.toString());
+										settle({ allow: true });
+									} else if (action === "Reject All") {
+										inlineReview.rejectAll(fileUri.toString());
+										settle({ allow: false, denyReason: "User rejected all changes" });
+									}
+								});
+							});
+						}
+
+						if (decision.allow && proposalResult && broker) {
+							const hunkIdsToAccept =
+								decision.acceptedHunkIds && decision.acceptedHunkIds.length > 0
+									? decision.acceptedHunkIds
+									: proposalResult.hunks.map((h: any) => h.id);
+							broker.recordApproval(proposalResult.hash, hunkIdsToAccept);
+
+							approvalInputs.push({
+								type: "user.tool_approval",
+								threadId: pendingApprovalEvent.threadId,
+								toolCallId,
+								approval: { status: "allow" },
+							});
+						} else {
+							approvalInputs.push({
+								type: "user.tool_approval",
+								threadId: pendingApprovalEvent.threadId,
+								toolCallId,
+								approval: {
+									status: "deny",
+									reason: decision.denyReason || "User rejected proposed changes",
+								},
+							});
+						}
+					}
+
+					turnInputs = approvalInputs;
+					continue;
+				}
+
+				if (!fullAccumulatedText.trim()) {
+					fullAccumulatedText = "I'm ready to assist with your coding tasks, running commands, and workspace operations. What would you like to run or build?";
 					await ctx.emit({
 						type: "assistant-text-delta",
 						snapshot: ctx.snapshot(),
 						iteration: ctx.snapshot().iteration,
-						text: turnAccumulatedText,
-						accumulatedText: fullAccumulatedText + turnAccumulatedText,
+						text: fullAccumulatedText,
+						accumulatedText: fullAccumulatedText,
 					});
 				}
 
-				fullAccumulatedText += (fullAccumulatedText ? "\n\n" : "") + turnAccumulatedText;
 				break;
 			}
 

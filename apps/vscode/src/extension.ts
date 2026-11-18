@@ -48,6 +48,9 @@ import {
 import { DIFF_VIEW_URI_SCHEME, diffContentProvider } from "./hosts/vscode/VscodeDiffContentProvider"
 import { EDIT_PREVIEW_URI_SCHEME, editPreviewContentProvider, VscodeEditPreview } from "./hosts/vscode/VscodeEditPreview"
 import { InlineDiffReviewController } from "./hosts/vscode/InlineDiffReviewController"
+import { startForgeEditorServer, ForgeEditorServer } from "./forge/server"
+import { changeLog, reviewBroker, createEditProposal, createWriteProposal } from "./forge/core"
+import * as fs from "node:fs"
 import { VscodeWebviewProvider } from "./hosts/vscode/VscodeWebviewProvider"
 import { exportVSCodeStorageToSharedFiles } from "./hosts/vscode/vscode-to-file-migration"
 import { ExtensionRegistryInfo } from "./registry"
@@ -162,6 +165,59 @@ export async function activate(context: vscode.ExtensionContext) {
 	const inlineReviewController = InlineDiffReviewController.getInstance()
 	context.subscriptions.push(inlineReviewController)
 	;(globalThis as any).clineInlineReview = inlineReviewController
+	;(globalThis as any).forgeReviewBroker = reviewBroker
+	;(globalThis as any).forgeChangeLog = changeLog
+	;(globalThis as any).forgeCreateEditProposal = createEditProposal
+	;(globalThis as any).forgeCreateWriteProposal = createWriteProposal
+
+	// Initialize Forge Editor MCP Server
+	const workspaceFolders = vscode.workspace.workspaceFolders
+	const rootPath = workspaceFolders?.[0]?.uri.fsPath || process.cwd()
+
+	let editorServer: ForgeEditorServer | undefined
+	try {
+		editorServer = await startForgeEditorServer({ workspaceRoot: rootPath })
+		;(globalThis as any).forgeEditorServer = editorServer
+		Logger.log(`[Forge] Editor MCP Server running at ${editorServer.url}`)
+	} catch (err) {
+		Logger.error(`[Forge] Failed to start Editor MCP Server:`, err)
+	}
+
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeWorkspaceFolders(() => {
+			const newRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+			if (newRoot && editorServer) {
+				editorServer.setWorkspaceRoot(newRoot)
+			}
+		}),
+	)
+
+	// Register "Undo last Forge change" command
+	const undoHandler = async () => {
+		const change = changeLog.popChange()
+		if (!change) {
+			vscode.window.showInformationMessage("No Forge changes to undo.")
+			return
+		}
+		try {
+			if (change.beforeText === null) {
+				if (fs.existsSync(change.filePath)) {
+					fs.unlinkSync(change.filePath)
+					vscode.window.showInformationMessage(`Undid creation of ${change.relativePath} (file deleted).`)
+				}
+			} else {
+				fs.writeFileSync(change.filePath, change.beforeText, "utf-8")
+				vscode.window.showInformationMessage(`Undid change to ${change.relativePath} (reverted to original).`)
+			}
+		} catch (undoErr: any) {
+			vscode.window.showErrorMessage(`Failed to undo change to ${change.relativePath}: ${undoErr?.message}`)
+		}
+	}
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand("cline.undoForgeChange", undoHandler),
+		vscode.commands.registerCommand("zentrix.undoForgeChange", undoHandler),
+	)
 
 	const handleUri = async (uri: vscode.Uri) => {
 		const url = decodeURIComponent(uri.toString())
@@ -667,6 +723,14 @@ async function getBinaryLocation(name: string): Promise<string> {
 
 // This method is called when your extension is deactivated
 export async function deactivate() {
+	// Stop Forge Editor MCP Server
+	try {
+		const srv = (globalThis as any).forgeEditorServer as ForgeEditorServer | undefined
+		if (srv) {
+			await srv.stop()
+		}
+	} catch {}
+
 	// Dispose Non-VSCode-specific services
 	try {
 		await tearDown()
