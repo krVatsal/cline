@@ -50,14 +50,22 @@ export function applyEdits(
 
 	for (let i = 0; i < edits.length; i++) {
 		const edit = edits[i];
-		const oldText = normalizeToLf(edit.old_text);
-		const newText = normalizeToLf(edit.new_text);
+		let oldText = normalizeToLf(edit.old_text);
+		let newText = normalizeToLf(edit.new_text);
 
 		if (!content.includes(oldText)) {
-			return {
-				content,
-				error: `Edit at index ${i} failed: target text not found in document:\n"${edit.old_text.slice(0, 100)}"`,
-			};
+			// Fallback: check if the model included line number prefixes like "  1 | " or "1 | "
+			const strippedOld = oldText.replace(/^\s*\d+\s*\|\s*/gm, "");
+			const strippedNew = newText.replace(/^\s*\d+\s*\|\s*/gm, "");
+			if (content.includes(strippedOld)) {
+				oldText = strippedOld;
+				newText = strippedNew;
+			} else {
+				return {
+					content,
+					error: `Edit at index ${i} failed: target text not found in document:\n"${edit.old_text.slice(0, 100)}"`,
+				};
+			}
 		}
 
 		// Ensure target text is unambiguous (appears exactly once in content)

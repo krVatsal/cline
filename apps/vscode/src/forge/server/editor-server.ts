@@ -42,13 +42,21 @@ export interface ForgeEditorServer {
 const TOOLS: Tool[] = [
 	{
 		name: "read_file",
-		description: "Reads the contents of a file from the workspace root. File contents are returned with LF line endings.",
+		description: "Reads the contents of a file from the workspace root. Output is numbered by line ('1 | content') and capped to max 400 lines / ~16 KB. Use start_line and end_line to paginate through larger files.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				path: {
 					type: "string",
 					description: "The path of the file to read, relative to workspace root.",
+				},
+				start_line: {
+					type: "number",
+					description: "Optional 1-indexed line number to start reading from.",
+				},
+				end_line: {
+					type: "number",
+					description: "Optional 1-indexed line number to stop reading at (inclusive).",
 				},
 			},
 			required: ["path"],
@@ -179,9 +187,54 @@ export async function startForgeEditorServer(
 						return { isError: true, content: [{ type: "text", text: `File not found: ${relPath}` }] };
 					}
 					try {
-						const raw = fs.readFileSync(check.resolvedPath, "utf-8");
+						let raw = "";
+						const vscode = (globalThis as any).vscode;
+						const openDoc = vscode?.workspace?.textDocuments?.find(
+							(d: any) => d?.uri?.fsPath && path.normalize(d.uri.fsPath) === path.normalize(check.resolvedPath!)
+						);
+						if (openDoc && typeof openDoc.getText === "function") {
+							raw = openDoc.getText();
+						} else {
+							raw = fs.readFileSync(check.resolvedPath, "utf-8");
+						}
+
 						const lfContent = normalizeToLf(raw);
-						return { content: [{ type: "text", text: lfContent }] };
+						const allLines = lfContent.split("\n");
+						const totalLines = allLines.length;
+
+						const startLine =
+							typeof args?.start_line === "number" && args.start_line > 0
+								? Math.floor(args.start_line)
+								: 1;
+						const requestedEnd =
+							typeof args?.end_line === "number" && args.end_line > 0
+								? Math.floor(args.end_line)
+								: totalLines;
+						const endLine = Math.min(totalLines, Math.max(startLine, requestedEnd));
+
+						const maxLinesBudget = 400;
+						const maxBytesBudget = 16000; // ~16 KB budget to avoid tool-response overflow & rate-limit traps
+
+						let resultText = "";
+						let linesRead = 0;
+						let truncated = false;
+
+						for (let i = startLine; i <= endLine; i++) {
+							const lineContent = allLines[i - 1] ?? "";
+							const formattedLine = `${i} | ${lineContent}\n`;
+							if (linesRead >= maxLinesBudget || (resultText.length + formattedLine.length) > maxBytesBudget) {
+								truncated = true;
+								break;
+							}
+							resultText += formattedLine;
+							linesRead++;
+						}
+
+						if (truncated) {
+							resultText += `\n[... output capped at ${linesRead} lines (${resultText.length} bytes); file has ${totalLines} lines. Narrow request using start_line and end_line]`;
+						}
+
+						return { content: [{ type: "text", text: resultText }] };
 					} catch (err: any) {
 						return { isError: true, content: [{ type: "text", text: `Failed to read file: ${err.message}` }] };
 					}
@@ -198,7 +251,18 @@ export async function startForgeEditorServer(
 					}
 					try {
 						const entries = fs.readdirSync(check.resolvedPath, { withFileTypes: true });
-						const ignored = new Set([".git", "node_modules", ".vscode", "dist", ".next"]);
+						const ignored = new Set([
+							".git",
+							"node_modules",
+							".vscode",
+							"dist",
+							"build",
+							".next",
+							"__pycache__",
+							".venv",
+							"venv",
+							".pytest_cache",
+						]);
 						const lines: string[] = [];
 						for (const entry of entries) {
 							if (ignored.has(entry.name)) continue;
@@ -228,14 +292,35 @@ export async function startForgeEditorServer(
 					}
 
 					try {
-						const matches = searchInDirectory(check.resolvedPath, currentWorkspaceRoot, query, 50);
+						const maxResults =
+							typeof args?.max_results === "number" && args.max_results > 0
+								? Math.floor(args.max_results)
+								: 50;
+						const matches = searchInDirectory(check.resolvedPath, currentWorkspaceRoot, query, maxResults);
 						if (matches.length === 0) {
 							return { content: [{ type: "text", text: `No occurrences of "${query}" found.` }] };
 						}
-						const output = matches
-							.map((m) => `${m.relativePath}:${m.lineNumber}: ${m.lineText}`)
-							.join("\n");
-						return { content: [{ type: "text", text: output }] };
+
+						let output = "";
+						let count = 0;
+						const maxBytes = 8000;
+						let truncatedCount = 0;
+
+						for (const m of matches) {
+							const line = `${m.relativePath}:${m.lineNumber}: ${m.lineText}\n`;
+							if (output.length + line.length > maxBytes) {
+								truncatedCount = matches.length - count;
+								break;
+							}
+							output += line;
+							count++;
+						}
+
+						if (truncatedCount > 0) {
+							output += `\n[... ${truncatedCount} more matches omitted. Narrow your search query or path]`;
+						}
+
+						return { content: [{ type: "text", text: output.trimEnd() }] };
 					} catch (err: any) {
 						return { isError: true, content: [{ type: "text", text: `Search failed: ${err.message}` }] };
 					}

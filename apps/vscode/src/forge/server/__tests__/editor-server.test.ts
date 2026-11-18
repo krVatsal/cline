@@ -83,7 +83,9 @@ describe("ForgeEditorServer - Streamable HTTP MCP Integration", () => {
 			arguments: { path: "hello.txt" },
 		});
 		expect(resp.status).toBe(200);
-		expect(resp.text).toContain("Hello World\\nLine 2\\nLine 3");
+		expect(resp.text).toContain("1 | Hello World");
+		expect(resp.text).toContain("2 | Line 2");
+		expect(resp.text).toContain("3 | Line 3");
 	});
 
 	it("lists files via list_dir tool", async () => {
