@@ -15,11 +15,12 @@ import {
 	createEditProposal,
 	createWriteProposal,
 	reviewBroker,
+	changeLog,
 	resolveSafePath,
 	forgeLogger,
 } from "../core";
 import { ForgeEditorServer } from "../server";
-import { classifyTurnError, computeBackoffDelay, sleep } from "./resilience";
+import { classifyTurnError, computeBackoffDelay, cleanErrorMessage, sleep } from "./resilience";
 
 export interface ApprovalDecisionInput {
 	allow: boolean;
@@ -52,6 +53,7 @@ export interface TurnRunnerOptions {
 	enableTools?: string[];
 	preloadTools?: string[];
 	requireApprovalForTools?: string[];
+	baseUrl?: string;
 }
 
 export class TurnRunner {
@@ -64,6 +66,7 @@ export class TurnRunner {
 	private readonly enableTools?: string[];
 	private readonly preloadTools?: string[];
 	private readonly requireApprovalForTools?: string[];
+	private readonly baseUrl: string;
 
 	private currentSessionId: string | null = null;
 	private readonly eventIndex = new EventIndex();
@@ -79,6 +82,7 @@ export class TurnRunner {
 		this.enableTools = options.enableTools;
 		this.preloadTools = options.preloadTools;
 		this.requireApprovalForTools = options.requireApprovalForTools;
+		this.baseUrl = options.baseUrl || "http://localhost:8790";
 	}
 
 	get sessionId(): string | null {
@@ -190,6 +194,7 @@ export class TurnRunner {
 	): Promise<{ text: string; status: string }> {
 		const maxRetries = 3;
 		let attempt = 0;
+		const initialChangesCount = changeLog.size();
 
 		while (true) {
 			attempt++;
@@ -200,55 +205,80 @@ export class TurnRunner {
 					throw err;
 				}
 
-				const errorClass = classifyTurnError(err);
-				forgeLogger.log(`[Turn Error] attempt=${attempt}/${maxRetries}, class=${errorClass}, error=${err.message}`);
+				const isDirectTfCall = !this.currentSessionId || !!err.isDirectCall;
+				const errorClass = classifyTurnError(err, isDirectTfCall);
+				const cleanMsg = cleanErrorMessage(err.message);
+				forgeLogger.log(`[Turn Error] attempt=${attempt}/${maxRetries}, class=${errorClass}, error=${cleanMsg}`);
 
-				// Handle RETRYABLE errors with exponential backoff
+				// 1. TRUEFORGE_DOWN: Never fall back. Show prompt to start TrueForge.
+				if (errorClass === "TRUEFORGE_DOWN") {
+					const downMsg = `Cannot reach TrueForge at ${this.baseUrl}. Start it with: npx @truefoundry/trueforge@latest`;
+					forgeLogger.log(`[TrueForge Down] ${downMsg}`);
+					callbacks.onStatusChange?.(downMsg);
+					const downError = new Error(downMsg);
+					callbacks.onError?.(downError);
+					const vs = getVsCode();
+					vs?.window?.showErrorMessage?.(downMsg);
+					throw downError;
+				}
+
+				// 2. RETRYABLE: Backoff retries up to maxRetries
 				if (errorClass === "RETRYABLE" && attempt < maxRetries) {
-					const delayMs = computeBackoffDelay(attempt);
-					forgeLogger.log(`[Retry] Retrying turn in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries}) due to: ${err.message}`);
+					const delayMs = computeBackoffDelay(attempt, err);
+					forgeLogger.log(`[Retry] Retrying turn in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries}) due to: ${cleanMsg}`);
 					callbacks.onStatusChange?.(`Rate limit / temporary error: retrying in ${(delayMs / 1000).toFixed(1)}s (attempt ${attempt + 1}/${maxRetries})...`);
 					await sleep(delayMs, externalSignal);
 					continue;
 				}
 
-				// Handle MODEL_FATAL (or exhausted 429 retries) with automatic model fallback
-				if (
-					(errorClass === "MODEL_FATAL" || errorClass === "RETRYABLE") &&
-					this.fallbackModel &&
-					this.fallbackModel !== this.activeModel
-				) {
+				// 3. Check change log before any fallback:
+				// "Fallback happens ONLY if no change was applied during this run; otherwise show the error plus the list of applied changes."
+				const appliedChanges = changeLog.getAll().slice(initialChangesCount);
+				if (appliedChanges.length > 0) {
+					const changeList = appliedChanges.map((c) => c.relativePath).join(", ");
+					const noReplayMsg = `Error during execution (${cleanMsg}). Changes were already applied to: ${changeList}. Replay aborted to prevent duplicate changes.`;
+					forgeLogger.log(`[No Replay] ${noReplayMsg}`);
+					callbacks.onStatusChange?.(noReplayMsg);
+					const noReplayError = new Error(noReplayMsg);
+					callbacks.onError?.(noReplayError);
+					const vs = getVsCode();
+					vs?.window?.showErrorMessage?.(noReplayMsg);
+					throw noReplayError;
+				}
+
+				// 4. AUTH, NETWORK, MODEL_FATAL and exhausted retries trigger automatic fallback to fallbackModelId
+				const qualifiesForFallback =
+					errorClass === "AUTH" ||
+					errorClass === "NETWORK" ||
+					errorClass === "MODEL_FATAL" ||
+					errorClass === "RETRYABLE";
+
+				if (qualifiesForFallback && this.fallbackModel && this.fallbackModel !== this.activeModel) {
 					const oldModel = this.activeModel;
 					const fallback = this.fallbackModel;
-					forgeLogger.log(`[Model Fallback] Primary model "${oldModel}" failed (${err.message}). Switching to fallback "${fallback}"...`);
-					
-					try {
-						const vs = getVsCode();
-						if (typeof vs?.window?.showWarningMessage === "function") {
-							vs.window.showWarningMessage(`Primary model ${oldModel} failed (${err.message}); switched to fallback ${fallback}`);
-						}
-					} catch {
-						// ignore if outside vscode
-					}
+					const reasonNotice = `[Model Fallback] Switched from "${oldModel}" to fallback "${fallback}" due to ${errorClass}: ${cleanMsg}`;
+					forgeLogger.log(reasonNotice);
 
-					callbacks.onStatusChange?.(`Switched to fallback model: ${fallback}`);
-					// Start fresh session with the fallback model
+					// Visible one-line chat notice naming the reason and the fallback model, and no user action
+					callbacks.onStatusChange?.(reasonNotice);
+					callbacks.onTextDelta?.(`\n> ${reasonNotice}\n\n`, reasonNotice);
+					const vs = getVsCode();
+					vs?.window?.showInformationMessage?.(reasonNotice);
+
+					// Start fresh session with the fallback model and original prompt
 					await this.initSession(fallback);
-					// Reset attempt counter and retry turn under fallback session
 					attempt = 0;
 					continue;
 				}
 
-				// If error is MODEL_FATAL but no fallback model is configured:
-				if (errorClass === "MODEL_FATAL") {
-					const cleanMsg = `Model "${this.activeModel}" failed: ${err.message}. Please configure a valid model in cline.trueforge.modelId or provide a fallback in cline.trueforge.fallbackModelId.`;
-					const cleanError = new Error(cleanMsg);
-					callbacks.onError?.(cleanError);
-					throw cleanError;
-				}
-
-				callbacks.onError?.(err);
-				throw err;
+				// 5. If no fallback model configured:
+				const fatalMsg = `Model "${this.activeModel}" failed (${errorClass}: ${cleanMsg}). No fallback model configured.`;
+				forgeLogger.log(`[Fatal Error] ${fatalMsg}`);
+				const fatalError = new Error(fatalMsg);
+				callbacks.onError?.(fatalError);
+				const vs = getVsCode();
+				vs?.window?.showErrorMessage?.(fatalMsg);
+				throw fatalError;
 			}
 		}
 	}
@@ -265,10 +295,18 @@ export class TurnRunner {
 			try {
 				await this.initSession();
 			} catch (initErr: any) {
+				const errClass = classifyTurnError(initErr);
+				if (errClass === "TRUEFORGE_DOWN") {
+					initErr.isDirectCall = true;
+					throw initErr;
+				}
 				if (this.fallbackModel && this.fallbackModel !== this.activeModel) {
-					callbacks.onStatusChange?.(`Primary model failed. Falling back to ${this.fallbackModel}...`);
+					const reasonNotice = `[Model Fallback] Primary model failed during init. Falling back to ${this.fallbackModel}...`;
+					forgeLogger.log(reasonNotice);
+					callbacks.onStatusChange?.(`Falling back to ${this.fallbackModel}...`);
 					await this.initSession(this.fallbackModel);
 				} else {
+					initErr.isDirectCall = true;
 					throw initErr;
 				}
 			}
