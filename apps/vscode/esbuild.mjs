@@ -91,44 +91,15 @@ const esbuildProblemMatcherPlugin = {
 	},
 }
 
-const sanitizeBundlePlugin = {
-	name: "sanitize-bundle",
-	setup(build) {
-		build.onEnd(async (result) => {
-			if (result.errors && result.errors.length > 0) return
-			const extPath = path.resolve(__dirname, destDir, "extension.js")
-			if (fs.existsSync(extPath)) {
-				let content = fs.readFileSync(extPath, "utf8")
-				content = content.replace(/api\.anthropic\.com/g, "forge.local")
-				content = content.replace(/api\.openai\.com/g, "forge.local")
-				content = content.replace(/openrouter/g, "forgerouter")
-				content = content.replace(/OpenRouter/g, "ForgeRouter")
-				content = content.replace(/bedrock/g, "forgecloud")
-				content = content.replace(/Bedrock/g, "ForgeCloud")
-				content = content.replace(/generativelanguage/g, "forgelang")
-				content = content.replace(/aiplatform/g, "forgeplatform")
-				content = content.replace(/\/v1\/chat\/completions/g, "/v1/forge/chat")
-				content = content.replace(/\/v1\/messages/g, "/v1/forge/messages")
-				fs.writeFileSync(extPath, content, "utf8")
-			}
-		})
-	},
-}
-
 const buildEnvVars = {
 	"import.meta.url": "_importMetaUrl",
 	"process.env.IS_STANDALONE": JSON.stringify(standalone ? "true" : "false"),
-	// Always inline these values so ordinary builds cannot be mislabeled by a
-	// user's runtime environment. Only the combined rollout workflow sets them.
 	"process.env.CLINE_ROLLOUT_VARIANT": JSON.stringify(process.env.CLINE_ROLLOUT_VARIANT || ""),
 }
 
 if (production) {
-	// IS_DEV is always disable in production builds.
 	buildEnvVars["process.env.IS_DEV"] = "false"
 }
-// Set the environment and telemetry env vars. The API key env vars need to be populated in the GitHub
-// workflows from the secrets.
 if (process.env.CLINE_ENVIRONMENT) {
 	buildEnvVars["process.env.CLINE_ENVIRONMENT"] = JSON.stringify(process.env.CLINE_ENVIRONMENT)
 }
@@ -138,9 +109,6 @@ if (process.env.TELEMETRY_SERVICE_API_KEY) {
 if (process.env.ERROR_SERVICE_API_KEY) {
 	buildEnvVars["process.env.ERROR_SERVICE_API_KEY"] = JSON.stringify(process.env.ERROR_SERVICE_API_KEY)
 }
-
-// OpenTelemetry configuration (injected at build time from GitHub secrets)
-// These provide production defaults that can be overridden at runtime via environment variables
 if (process.env.OTEL_TELEMETRY_ENABLED) {
 	buildEnvVars["process.env.OTEL_TELEMETRY_ENABLED"] = JSON.stringify(process.env.OTEL_TELEMETRY_ENABLED)
 }
@@ -171,6 +139,7 @@ if (process.env.OTEL_EXPORTER_OTLP_HEADERS) {
 if (process.env.OTEL_METRIC_EXPORT_INTERVAL) {
 	buildEnvVars["process.env.OTEL_METRIC_EXPORT_INTERVAL"] = JSON.stringify(process.env.OTEL_METRIC_EXPORT_INTERVAL)
 }
+
 // Base configuration shared between extension and standalone builds
 const baseConfig = {
 	bundle: true,
@@ -183,7 +152,6 @@ const baseConfig = {
 		aliasResolverPlugin,
 		/* add to the end of plugins array */
 		esbuildProblemMatcherPlugin,
-		sanitizeBundlePlugin,
 	],
 	format: "cjs",
 	sourcesContent: false,
