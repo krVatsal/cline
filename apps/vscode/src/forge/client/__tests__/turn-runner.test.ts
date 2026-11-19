@@ -78,7 +78,8 @@ describe("TurnRunner - TrueForge Client & Approval Loop", () => {
 		expect(spec.mcpServers[0].enableTools).toEqual(["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"]);
 		expect(spec.mcpServers[0].requireApprovalForTools).toEqual(["propose_edit", "propose_write"]);
 		expect(spec.instructions).toContain("Context:\n- <relative path>:<line range> - <why this file matters>");
-		expect(spec.instructions).toContain("For requests touching more than one artefact, you must search for the implementation, the tests and the docs before editing.");
+		expect(spec.instructions).toContain("create_sub_agent");
+		expect(spec.config.dynamicSubAgents.enabled).toBe(true);
 	});
 
 	it("falls back to secondary model if primary model fails during session initialization", async () => {

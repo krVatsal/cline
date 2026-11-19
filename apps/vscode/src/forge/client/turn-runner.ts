@@ -128,11 +128,12 @@ export class TurnRunner {
 		const allTools = this.enableTools ?? ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
 		const approvalTools = this.requireApprovalForTools ?? ["propose_edit", "propose_write"];
 
-		// Item 3: Explicit Context: list with reasons before proposing changes
+		// Item 3 & 4: Explicit Context: list with reasons and sub-agent delegation for multi-file tasks
 		const defaultInstructions =
 			"You are an expert AI software engineering partner assisting the user in their codebase.\n" +
 			"Inspect files using read_file, search_workspace, and list_dir.\n" +
-			"For requests touching more than one artefact, you must search for the implementation, the tests and the docs before editing.\n" +
+			"For multi-file tasks or requests touching more than one artefact, you MUST first delegate read-only codebase exploration to a sub-agent using the create_sub_agent tool (e.g. name: 'codebase-explorer', input: 'Search the workspace for implementation files, tests, and documentation related to the request, and return a ranked file list with reasons').\n" +
+			"Wait for the sub-agent to return the ranked list of files before taking further action.\n" +
 			"Before proposing your first edit in a turn, you MUST output a list in the following format:\n" +
 			"Context:\n" +
 			"- <relative path>:<line range> - <why this file matters>\n" +
