@@ -54,17 +54,41 @@ export function applyEdits(
 		let newText = normalizeToLf(edit.new_text);
 
 		if (!content.includes(oldText)) {
-			// Fallback: check if the model included line number prefixes like "  1 | " or "1 | "
+			// Fallback 1: check if the model included line number prefixes like "  1 | " or "1 | "
 			const strippedOld = oldText.replace(/^\s*\d+\s*\|\s*/gm, "");
 			const strippedNew = newText.replace(/^\s*\d+\s*\|\s*/gm, "");
 			if (content.includes(strippedOld)) {
 				oldText = strippedOld;
 				newText = strippedNew;
 			} else {
-				return {
-					content,
-					error: `Edit at index ${i} failed: target text not found in document:\n"${edit.old_text.slice(0, 100)}"`,
-				};
+				// Fallback 2: line-by-line whitespace normalization
+				// Match a block where each line's trimmed content matches oldText's trimmed lines
+				const oldLines = oldText.split("\n").map((l) => l.trim());
+				const contentLines = content.split("\n");
+				let matchStart = -1;
+				let matchCount = 0;
+				for (let lineIdx = 0; lineIdx <= contentLines.length - oldLines.length; lineIdx++) {
+					let matches = true;
+					for (let j = 0; j < oldLines.length; j++) {
+						if (contentLines[lineIdx + j].trim() !== oldLines[j]) {
+							matches = false;
+							break;
+						}
+					}
+					if (matches) {
+						matchCount++;
+						matchStart = lineIdx;
+					}
+				}
+
+				if (matchCount === 1 && matchStart !== -1) {
+					oldText = contentLines.slice(matchStart, matchStart + oldLines.length).join("\n");
+				} else {
+					return {
+						content,
+						error: `Edit at index ${i} failed: target text not found in document:\n"${edit.old_text.slice(0, 100)}"`,
+					};
+				}
 			}
 		}
 

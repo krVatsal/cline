@@ -49,6 +49,9 @@ export interface TurnRunnerOptions {
 	fallbackModel?: string;
 	instructions?: string;
 	iterationLimit?: number;
+	enableTools?: string[];
+	preloadTools?: string[];
+	requireApprovalForTools?: string[];
 }
 
 export class TurnRunner {
@@ -58,6 +61,9 @@ export class TurnRunner {
 	private readonly fallbackModel?: string;
 	private readonly instructions?: string;
 	private readonly iterationLimit: number;
+	private readonly enableTools?: string[];
+	private readonly preloadTools?: string[];
+	private readonly requireApprovalForTools?: string[];
 
 	private currentSessionId: string | null = null;
 	private readonly eventIndex = new EventIndex();
@@ -70,6 +76,9 @@ export class TurnRunner {
 		this.fallbackModel = options.fallbackModel;
 		this.instructions = options.instructions;
 		this.iterationLimit = options.iterationLimit ?? 30;
+		this.enableTools = options.enableTools;
+		this.preloadTools = options.preloadTools;
+		this.requireApprovalForTools = options.requireApprovalForTools;
 	}
 
 	get sessionId(): string | null {
@@ -110,9 +119,10 @@ export class TurnRunner {
 		const modelName = modelOverride || this.activeModel;
 		this.activeModel = modelName;
 
-		// Preload core file & diff tools; search_workspace remains deferred in enableTools (Phase D2)
-		const coreTools = ["read_file", "list_dir", "propose_edit", "propose_write"];
-		const allTools = ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
+		// Tools configuration: default to full editor suite or use explicit overrides
+		const coreTools = this.preloadTools ?? ["read_file", "list_dir", "propose_edit", "propose_write"];
+		const allTools = this.enableTools ?? ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
+		const approvalTools = this.requireApprovalForTools ?? ["propose_edit", "propose_write"];
 
 		// Phase D1: Explicit Context: output requirement before proposing changes
 		const defaultInstructions =
@@ -141,7 +151,7 @@ export class TurnRunner {
 							preload: true,
 							enableTools: allTools,
 							preloadTools: coreTools,
-							requireApprovalForTools: ["propose_edit", "propose_write"],
+							requireApprovalForTools: approvalTools,
 						},
 					],
 					config: {
@@ -329,8 +339,10 @@ export class TurnRunner {
 						this.eventIndex.indexEvent(event);
 						if (event.toolCalls && event.toolCalls.length > 0) {
 							for (const tc of event.toolCalls) {
-								callbacks.onToolCallStarted?.(tc.toolName || tc.name, tc.arguments || tc.input);
-								forgeLogger.log(`[Tool Call Requested] tool=${tc.toolName || tc.name}, args=${JSON.stringify(tc.arguments || tc.input || {})}`);
+								const tcName = tc.toolName || tc.name || tc.function?.name || "";
+								const tcArgs = tc.arguments || tc.input || tc.function?.arguments || {};
+								callbacks.onToolCallStarted?.(tcName, tcArgs);
+								forgeLogger.log(`[Tool Call Requested] tool=${tcName}, args=${typeof tcArgs === "string" ? tcArgs : JSON.stringify(tcArgs)}`);
 							}
 						}
 						if (event.content && !accumulatedText) {
@@ -366,7 +378,9 @@ export class TurnRunner {
 						const detail: PendingToolApprovalDetail = { ...item };
 
 						const fnName = item.toolName === "call_tool" ? item.arguments?.tool_name : item.toolName;
-						const fnArgs = (item.toolName === "call_tool" && item.arguments?.input) ? item.arguments.input : item.arguments;
+						const fnArgs = (item.toolName === "call_tool")
+							? (item.arguments?.input ?? item.arguments?.tool_arguments ?? item.arguments?.arguments ?? item.arguments)
+							: item.arguments;
 
 						if (fnName === "propose_edit") {
 							const relPath = fnArgs?.path;

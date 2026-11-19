@@ -50,6 +50,7 @@ import { EDIT_PREVIEW_URI_SCHEME, editPreviewContentProvider, VscodeEditPreview 
 import { InlineDiffReviewController } from "./hosts/vscode/InlineDiffReviewController"
 import { startForgeEditorServer, ForgeEditorServer } from "./forge/server"
 import { changeLog, reviewBroker, createEditProposal, createWriteProposal } from "./forge/core"
+import { executeInlineEdit } from "./forge/client"
 import { TrueForge } from "@truefoundry/trueforge-sdk"
 import * as fs from "node:fs"
 import { VscodeWebviewProvider } from "./hosts/vscode/VscodeWebviewProvider"
@@ -239,6 +240,40 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand("cline.undoForgeChange", undoHandler),
 		vscode.commands.registerCommand("zentrix.undoForgeChange", undoHandler),
+		vscode.commands.registerCommand("cline.editSelection", async () => {
+			if (!editorServer) {
+				vscode.window.showErrorMessage("Forge MCP server is not running.")
+				return
+			}
+			const tfBaseUrl = vscode.workspace.getConfiguration("cline").get("trueforge.baseUrl") || "http://127.0.0.1:8790"
+			const modelId = vscode.workspace.getConfiguration("cline").get("trueforge.modelId") || "groq/openai-gpt-oss-20b"
+			const fallbackModelId =
+				vscode.workspace.getConfiguration("cline").get("trueforge.fallbackModelId") || "google-gemini/gemini-2.5-flash"
+
+			await executeInlineEdit({
+				editorServer,
+				baseUrl: String(tfBaseUrl),
+				model: String(modelId),
+				fallbackModel: String(fallbackModelId),
+			})
+		}),
+		vscode.commands.registerCommand("zentrix.editSelection", async () => {
+			if (!editorServer) {
+				vscode.window.showErrorMessage("Forge MCP server is not running.")
+				return
+			}
+			const tfBaseUrl = vscode.workspace.getConfiguration("cline").get("trueforge.baseUrl") || "http://127.0.0.1:8790"
+			const modelId = vscode.workspace.getConfiguration("cline").get("trueforge.modelId") || "groq/openai-gpt-oss-20b"
+			const fallbackModelId =
+				vscode.workspace.getConfiguration("cline").get("trueforge.fallbackModelId") || "google-gemini/gemini-2.5-flash"
+
+			await executeInlineEdit({
+				editorServer,
+				baseUrl: String(tfBaseUrl),
+				model: String(modelId),
+				fallbackModel: String(fallbackModelId),
+			})
+		}),
 	)
 
 	const handleUri = async (uri: vscode.Uri) => {
