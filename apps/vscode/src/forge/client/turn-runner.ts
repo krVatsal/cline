@@ -124,19 +124,26 @@ export class TurnRunner {
 		this.activeModel = modelName;
 
 		// Tools configuration: default to full editor suite or use explicit overrides
-		const coreTools = this.preloadTools ?? ["read_file", "list_dir", "propose_edit", "propose_write"];
+		const coreTools = this.preloadTools ?? ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
 		const allTools = this.enableTools ?? ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
 		const approvalTools = this.requireApprovalForTools ?? ["propose_edit", "propose_write"];
 
-		// Phase D1: Explicit Context: output requirement before proposing changes
+		// Item 3: Explicit Context: list with reasons before proposing changes
 		const defaultInstructions =
-			"You are an expert AI software engineering partner assisting the user in their codebase. " +
-			"Inspect files using read_file, search_workspace, and list_dir. " +
-			"Before proposing your first edit in a turn, you MUST output a line of the form:\n" +
-			"Context: <comma-separated list of relative file paths and line ranges you inspected>\n" +
-			"Example: Context: src/flask/helpers.py:10-45, src/flask/sansio/scaffold.py:100-140\n" +
+			"You are an expert AI software engineering partner assisting the user in their codebase.\n" +
+			"Inspect files using read_file, search_workspace, and list_dir.\n" +
+			"For requests touching more than one artefact, you must search for the implementation, the tests and the docs before editing.\n" +
+			"Before proposing your first edit in a turn, you MUST output a list in the following format:\n" +
+			"Context:\n" +
+			"- <relative path>:<line range> - <why this file matters>\n" +
+			"(one line per file inspected, with forward slashes and exact line ranges).\n" +
+			"Example:\n" +
+			"Context:\n" +
+			"- src/flask/helpers.py:10-45 - contains get_debug_flag implementation and docstring\n" +
+			"- tests/test_helpers.py:50-80 - unit tests verifying debug flag behavior\n" +
+			"- docs/config.rst:20-35 - documentation describing FLASK_DEBUG behavior\n" +
 			"Do not guess line numbers; report the ranges you actually read using read_file.\n" +
-			"When modifying files, propose changes using propose_edit or propose_write. " +
+			"When modifying files, propose changes using propose_edit or propose_write.\n" +
 			"Edits will be presented to the user for approval before writing to disk.";
 
 		const session = await this.client.sessions.create({

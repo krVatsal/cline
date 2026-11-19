@@ -5,10 +5,13 @@ import { ForgeEditorServer } from "../server";
 import { resolveSafePath, forgeLogger } from "../core";
 
 function getVsCode(): any {
+	if ((globalThis as any).vscode) {
+		return (globalThis as any).vscode;
+	}
 	try {
 		return require("vscode");
 	} catch {
-		return (globalThis as any).vscode;
+		return undefined;
 	}
 }
 
