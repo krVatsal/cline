@@ -7,12 +7,32 @@ import type {
 	AgentModelFinishReason,
 	AgentRunResult,
 	AgentUsage,
-} from "@cline/shared";
-import type {
-	AgentHarness,
-	AgentHarnessContext,
-	AgentRunInput,
-} from "../agent-runtime";
+	AgentRuntimeEvent,
+	AgentRuntimeStateSnapshot,
+} from "../agent";
+
+export interface AgentHarnessContext {
+	snapshot(): AgentRuntimeStateSnapshot;
+	emit(event: AgentRuntimeEvent): Promise<void>;
+	readonly tools: ReadonlyMap<string, any>;
+	readonly hooks: Readonly<any>;
+	readonly config: Readonly<any>;
+	throwIfAborted(): void;
+	readonly signal: AbortSignal | undefined;
+	updateUsage(usage: Partial<AgentUsage>): Promise<void>;
+	recordAssistantMessage(message: AgentMessage, finishReason: AgentModelFinishReason): Promise<void>;
+	finishRun(
+		status: AgentRunResult["status"],
+		assistantMessage?: AgentMessage,
+		outputText?: string,
+	): AgentRunResult;
+}
+
+export type AgentRunInput = string | { text?: string; prompt?: string; content?: any } | any[];
+
+export interface AgentHarness {
+	run(ctx: AgentHarnessContext, input?: AgentRunInput): Promise<AgentRunResult>;
+}
 
 export interface TrueForgeHarnessOptions {
 	/**
@@ -267,14 +287,14 @@ export class TrueForgeHarness implements AgentHarness {
 			return envModel.trim();
 		}
 		try {
-			const modelsResponse = await this.withClient((c) => c.models.list());
-			const activeModels = modelsResponse.data ?? [];
+			const modelsResponse: any = await this.withClient((c) => c.models.list());
+			const activeModels: any[] = modelsResponse?.data ?? [];
 
 			// If a specific model was requested (e.g. "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b")
 			if (requestedModelId?.trim()) {
 				const req = requestedModelId.trim();
 				const matched = activeModels.find(
-					(m) =>
+					(m: any) =>
 						m.name === req ||
 						m.modelId === req ||
 						m.name === `groq/${req}` ||
@@ -288,10 +308,10 @@ export class TrueForgeHarness implements AgentHarness {
 
 			// Prefer fast Groq models with high rate limits (e.g. 20b or qwen instead of 120b which has an 8000 TPM limit)
 			const preferredGroq =
-				activeModels.find((m) => m.name === "groq/openai-gpt-oss-20b") ||
-				activeModels.find((m) => m.name?.includes("20b")) ||
-				activeModels.find((m) => m.name?.includes("qwen")) ||
-				activeModels.find((m) => m.name?.startsWith("groq/"));
+				activeModels.find((m: any) => m.name === "groq/openai-gpt-oss-20b") ||
+				activeModels.find((m: any) => m.name?.includes("20b")) ||
+				activeModels.find((m: any) => m.name?.includes("qwen")) ||
+				activeModels.find((m: any) => m.name?.startsWith("groq/"));
 			if (preferredGroq?.name) {
 				return preferredGroq.name;
 			}

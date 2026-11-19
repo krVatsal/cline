@@ -5,3 +5,4 @@ export * from "./proposals";
 export * from "./broker";
 export * from "./change-log";
 export * from "./event-index";
+export * from "./logger";

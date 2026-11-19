@@ -1,0 +1,34 @@
+{
+  "description": "Example model configurations tested with TrueForge for the Forge-a-thon",
+  "testedModels": [
+    {
+      "id": "groq/openai-gpt-oss-20b",
+      "provider": "groq",
+      "name": "openai-gpt-oss-20b",
+      "role": "fast_primary",
+      "contextWindow": 131072,
+      "description": "High-throughput, fast model for editor tools and proposals with relaxed rate limits."
+    },
+    {
+      "id": "google-gemini/gemini-2.5-flash",
+      "provider": "google-gemini",
+      "name": "gemini-2.5-flash",
+      "role": "fallback",
+      "contextWindow": 1048576,
+      "description": "Reliable fallback model when primary encounters 429 or quota limits."
+    },
+    {
+      "id": "groq/openai-gpt-oss-120b",
+      "provider": "groq",
+      "name": "openai-gpt-oss-120b",
+      "role": "reasoning_heavy",
+      "contextWindow": 131072,
+      "notes": "Free tier enforces 8,000 TPM limit. Use pagination in read_file when inspecting large files."
+    }
+  ],
+  "vscodeSettings": {
+    "cline.trueforge.baseUrl": "http://127.0.0.1:8790",
+    "cline.trueforge.modelId": "groq/openai-gpt-oss-20b",
+    "cline.trueforge.fallbackModelId": "google-gemini/gemini-2.5-flash"
+  }
+}

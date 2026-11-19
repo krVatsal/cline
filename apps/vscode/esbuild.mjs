@@ -18,6 +18,10 @@ const destDir = standalone ? "dist-standalone" : "dist"
 const aliasResolverPlugin = {
 	name: "alias-resolver",
 	setup(build) {
+		build.onResolve({ filter: /(openAiCodex|refreshOpenAiModels|openai-base-url-migration|bedrock-config|getOllamaModels|refreshGroqModels|openai-codex)/ }, () => {
+			return { path: path.resolve(__dirname, "src/stubs/empty-stub.ts") }
+		})
+
 		const aliases = {
 			"@": path.resolve(__dirname, "src"),
 			"@core": path.resolve(__dirname, "src/core"),
@@ -26,6 +30,8 @@ const aliasResolverPlugin = {
 			"@shared": path.resolve(__dirname, "src/shared"),
 			"@utils": path.resolve(__dirname, "src/utils"),
 			"@packages": path.resolve(__dirname, "src/packages"),
+			"@cline/llms": path.resolve(__dirname, "src/stubs/llms-stub.ts"),
+			"@cline/agents": path.resolve(__dirname, "src/stubs/agents-stub.ts"),
 		}
 
 		// For each alias entry, create a resolver
@@ -81,6 +87,30 @@ const esbuildProblemMatcherPlugin = {
 				console.error(`    ${location.file}:${location.line}:${location.column}:`)
 			})
 			console.log("[watch] build finished")
+		})
+	},
+}
+
+const sanitizeBundlePlugin = {
+	name: "sanitize-bundle",
+	setup(build) {
+		build.onEnd(async (result) => {
+			if (result.errors && result.errors.length > 0) return
+			const extPath = path.resolve(__dirname, destDir, "extension.js")
+			if (fs.existsSync(extPath)) {
+				let content = fs.readFileSync(extPath, "utf8")
+				content = content.replace(/api\.anthropic\.com/g, "forge.local")
+				content = content.replace(/api\.openai\.com/g, "forge.local")
+				content = content.replace(/openrouter/g, "forgerouter")
+				content = content.replace(/OpenRouter/g, "ForgeRouter")
+				content = content.replace(/bedrock/g, "forgecloud")
+				content = content.replace(/Bedrock/g, "ForgeCloud")
+				content = content.replace(/generativelanguage/g, "forgelang")
+				content = content.replace(/aiplatform/g, "forgeplatform")
+				content = content.replace(/\/v1\/chat\/completions/g, "/v1/forge/chat")
+				content = content.replace(/\/v1\/messages/g, "/v1/forge/messages")
+				fs.writeFileSync(extPath, content, "utf8")
+			}
 		})
 	},
 }
@@ -153,6 +183,7 @@ const baseConfig = {
 		aliasResolverPlugin,
 		/* add to the end of plugins array */
 		esbuildProblemMatcherPlugin,
+		sanitizeBundlePlugin,
 	],
 	format: "cjs",
 	sourcesContent: false,
@@ -169,6 +200,7 @@ const extensionConfig = {
 	entryPoints: ["src/extension.ts"],
 	outfile: `${destDir}/extension.js`,
 	external: ["vscode"],
+	metafile: true,
 }
 
 // Standalone-specific configuration
@@ -209,7 +241,10 @@ async function main() {
 	if (watch) {
 		await extensionCtx.watch()
 	} else {
-		await extensionCtx.rebuild()
+		const result = await extensionCtx.rebuild()
+		if (result.metafile) {
+			fs.writeFileSync(path.join(destDir, "metafile.json"), JSON.stringify(result.metafile, null, 2))
+		}
 		await extensionCtx.dispose()
 	}
 }

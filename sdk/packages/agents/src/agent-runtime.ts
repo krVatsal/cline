@@ -45,7 +45,7 @@ import {
 	trimNonEmpty,
 } from "@cline/shared";
 import { nanoid } from "nanoid";
-import { TrueForgeHarness } from "./harness/trueforge-harness";
+import { TrueForgeHarness } from "./harness";
 
 /** A model request after turn preparation, ready to be issued (possibly more than once). */
 interface PreparedModelRequest {

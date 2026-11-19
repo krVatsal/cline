@@ -172,30 +172,33 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 			const doc = await vscode.workspace.openTextDocument(fileUri)
 			const editor = await vscode.window.showTextDocument(doc, { preview: false })
 
-			// Apply newContent to editor buffer to visually show the proposed changes
-			if (doc.getText() !== newContent) {
-				await editor.edit((builder) => {
-					const fullRange = new vscode.Range(
-						0,
-						0,
-						doc.lineCount,
-						doc.lineAt(Math.max(0, doc.lineCount - 1)).text.length,
-					)
-					builder.replace(fullRange, newContent)
-				})
-			}
+			// NOTE (Auto-Save Safety): We do NOT mutate the doc buffer before approval!
+			// Leaving the buffer untouched guarantees:
+			// 1) doc.isDirty remains false.
+			// 2) files.autoSave ("afterDelay" or "onFocusChange") never flushes unapproved changes to disk.
+			// 3) Git status remains completely clean while review is pending.
+			// Changes are rendered visually via decorations and CodeLenses targeting hunk.originalStart.
 
 			this.applyDecorationsToEditor(editor)
 			this.onDidChangeCodeLensesEmitter.fire()
 
 			if (hunks.length > 0) {
-				const targetLine = Math.min(Math.max(0, hunks[0].newStart), Math.max(0, doc.lineCount - 1))
+				const targetLine = Math.min(Math.max(0, hunks[0].originalStart), Math.max(0, doc.lineCount - 1))
 				const pos = new vscode.Position(targetLine, 0)
 				editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
 			}
 		} catch (error) {
 			Logger.warn(`[InlineDiffReviewController] Failed to open review for ${fileUri.fsPath}: ${error}`)
 		}
+	}
+
+	cancelAllReviews(reason: string = "User stopped operation"): void {
+		for (const [uriStr, review] of this.activeReviews.entries()) {
+			review.onDecision?.({ allow: false, denyReason: reason })
+			this.clearDecorationsForUri(uriStr)
+		}
+		this.activeReviews.clear()
+		this.onDidChangeCodeLensesEmitter.fire()
 	}
 
 	provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
@@ -212,13 +215,13 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 		codeLenses.push(
 			new vscode.CodeLens(topRange, {
 				title: "$(check-all) Accept All",
-				tooltip: "Accept all changes in this file",
+				tooltip: "Accept all proposed changes in this file",
 				command: "cline.inlineReview.acceptAll",
 				arguments: [uriStr],
 			}),
 			new vscode.CodeLens(topRange, {
 				title: "$(discard) Reject All",
-				tooltip: "Reject all changes and revert file to original",
+				tooltip: "Reject all proposed changes (disk remains unchanged)",
 				command: "cline.inlineReview.rejectAll",
 				arguments: [uriStr],
 			}),
@@ -226,19 +229,19 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 
 		// Each hunk: Accept / Reject
 		for (const hunk of review.hunks) {
-			const targetLine = Math.min(Math.max(0, hunk.newStart), Math.max(0, document.lineCount - 1))
+			const targetLine = Math.min(Math.max(0, hunk.originalStart), Math.max(0, document.lineCount - 1))
 			const hunkRange = new vscode.Range(targetLine, 0, targetLine, 0)
 
 			codeLenses.push(
 				new vscode.CodeLens(hunkRange, {
-					title: "$(check) Accept Change",
-					tooltip: "Accept this change block",
+					title: `$(check) Accept Hunk #${hunk.id}`,
+					tooltip: `Accept hunk #${hunk.id}`,
 					command: "cline.inlineReview.acceptHunk",
 					arguments: [uriStr, hunk.id],
 				}),
 				new vscode.CodeLens(hunkRange, {
-					title: "$(close) Reject Change",
-					tooltip: "Reject this change block and revert to original code",
+					title: `$(close) Reject Hunk #${hunk.id}`,
+					tooltip: `Reject hunk #${hunk.id}`,
 					command: "cline.inlineReview.rejectHunk",
 					arguments: [uriStr, hunk.id],
 				}),
@@ -259,7 +262,6 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 			review.acceptedHunkIds = []
 		}
 		review.acceptedHunkIds.push(hunkId)
-
 		review.hunks.splice(index, 1)
 
 		if (review.hunks.length === 0) {
@@ -271,7 +273,7 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 			onDecision?.({ allow: true, acceptedHunkIds: accepted.map((id) => `hunk-${id - 1}`) })
 		} else {
 			this.updateDecorationsForUri(uriStr)
-			vscode.window.setStatusBarMessage("Change accepted", 2500)
+			vscode.window.setStatusBarMessage(`Hunk #${hunkId} accepted`, 2500)
 		}
 
 		this.onDidChangeCodeLensesEmitter.fire()
@@ -284,67 +286,26 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 		const index = review.hunks.findIndex((h) => h.id === hunkId)
 		if (index === -1) return
 
-		const hunk = review.hunks[index]
-		const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uriStr)
-		const doc = editor ? editor.document : await vscode.workspace.openTextDocument(review.uri)
+		review.hunks.splice(index, 1)
 
-		// Revert the hunk lines back to originalText
-		let startPos: vscode.Position
-		let endPos: vscode.Position
-
-		if (hunk.newLineCount > 0) {
-			startPos = new vscode.Position(Math.min(hunk.newStart, doc.lineCount - 1), 0)
-			const endLine = hunk.newStart + hunk.newLineCount
-			if (endLine < doc.lineCount) {
-				endPos = new vscode.Position(endLine, 0)
+		if (review.hunks.length === 0) {
+			const onDecision = review.onDecision
+			const accepted = review.acceptedHunkIds || []
+			this.activeReviews.delete(uriStr)
+			this.clearDecorationsForUri(uriStr)
+			if (accepted.length > 0) {
+				vscode.window.showInformationMessage("Hunk review complete.")
+				onDecision?.({ allow: true, acceptedHunkIds: accepted.map((id) => `hunk-${id - 1}`) })
 			} else {
-				const lastLine = doc.lineCount - 1
-				endPos = new vscode.Position(lastLine, doc.lineAt(lastLine).text.length)
+				vscode.window.showInformationMessage("All changes rejected.")
+				onDecision?.({ allow: false, denyReason: "User rejected all changes" })
 			}
 		} else {
-			const insertLine = Math.min(hunk.newStart, doc.lineCount - 1)
-			startPos = new vscode.Position(insertLine, 0)
-			endPos = startPos
+			this.updateDecorationsForUri(uriStr)
+			vscode.window.setStatusBarMessage(`Hunk #${hunkId} rejected`, 2500)
 		}
 
-		const replacementText = hunk.originalText
-
-		const workEditor = editor ?? (await vscode.window.showTextDocument(doc, { preview: false }))
-		const success = await workEditor.edit((builder) => {
-			builder.replace(new vscode.Range(startPos, endPos), replacementText)
-		})
-
-		if (success) {
-			await doc.save()
-
-			// Adjust line numbers for remaining hunks
-			const delta = hunk.originalLineCount - hunk.newLineCount
-			for (let i = 0; i < review.hunks.length; i++) {
-				if (i !== index && review.hunks[i].newStart > hunk.newStart) {
-					review.hunks[i].newStart += delta
-				}
-			}
-
-			review.hunks.splice(index, 1)
-
-			if (review.hunks.length === 0) {
-				const onDecision = review.onDecision
-				const accepted = review.acceptedHunkIds || []
-				this.activeReviews.delete(uriStr)
-				this.clearDecorationsForUri(uriStr)
-				vscode.window.showInformationMessage("All changes reviewed.")
-				if (accepted.length > 0) {
-					onDecision?.({ allow: true, acceptedHunkIds: accepted.map((id) => `hunk-${id - 1}`) })
-				} else {
-					onDecision?.({ allow: false, denyReason: "User rejected all changes" })
-				}
-			} else {
-				this.updateDecorationsForUri(uriStr)
-				vscode.window.setStatusBarMessage("Change reverted", 2500)
-			}
-
-			this.onDidChangeCodeLensesEmitter.fire()
-		}
+		this.onDidChangeCodeLensesEmitter.fire()
 	}
 
 	async acceptAll(uriStr: string): Promise<void> {
@@ -355,11 +316,6 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 		this.activeReviews.delete(uriStr)
 		this.clearDecorationsForUri(uriStr)
 		this.onDidChangeCodeLensesEmitter.fire()
-
-		const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uriStr)
-		if (editor && editor.document.isDirty) {
-			await editor.document.save()
-		}
 
 		vscode.window.showInformationMessage("Accepted all changes.")
 		onDecision?.({ allow: true })
@@ -374,20 +330,7 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 		this.clearDecorationsForUri(uriStr)
 		this.onDidChangeCodeLensesEmitter.fire()
 
-		const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uriStr)
-		const doc = editor ? editor.document : await vscode.workspace.openTextDocument(review.uri)
-		const workEditor = editor ?? (await vscode.window.showTextDocument(doc, { preview: false }))
-
-		const fullRange = new vscode.Range(0, 0, doc.lineCount, 0)
-		const success = await workEditor.edit((builder) => {
-			builder.replace(fullRange, review.originalContent)
-		})
-
-		if (success) {
-			await doc.save()
-		}
-
-		vscode.window.showInformationMessage("Reverted all changes.")
+		vscode.window.showInformationMessage("Rejected all changes.")
 		onDecision?.({ allow: false, denyReason: "User rejected all changes" })
 	}
 
@@ -406,15 +349,15 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 			const hoverMsg = new vscode.MarkdownString()
 			hoverMsg.appendMarkdown(`### Cline Diff Review (Hunk #${hunk.id})\n`)
 			if (hunk.originalText.trim()) {
-				hoverMsg.appendMarkdown(`**Original code:**\n\`\`\`\n${hunk.originalText.trim()}\n\`\`\`\n\n`)
+				hoverMsg.appendMarkdown(`**Current code to replace:**\n\`\`\`\n${hunk.originalText.trim()}\n\`\`\`\n\n`)
 			}
 			if (hunk.newText.trim()) {
-				hoverMsg.appendMarkdown(`**New code:**\n\`\`\`\n${hunk.newText.trim()}\n\`\`\`\n`)
+				hoverMsg.appendMarkdown(`**Proposed new code:**\n\`\`\`\n${hunk.newText.trim()}\n\`\`\`\n`)
 			}
 
-			if (hunk.newLineCount > 0) {
-				const startLine = Math.min(hunk.newStart, editor.document.lineCount - 1)
-				const endLine = Math.min(hunk.newStart + hunk.newLineCount - 1, editor.document.lineCount - 1)
+			if (hunk.originalLineCount > 0) {
+				const startLine = Math.min(hunk.originalStart, editor.document.lineCount - 1)
+				const endLine = Math.min(hunk.originalStart + hunk.originalLineCount - 1, editor.document.lineCount - 1)
 				const range = new vscode.Range(
 					new vscode.Position(startLine, 0),
 					new vscode.Position(endLine, Number.MAX_SAFE_INTEGER),
@@ -424,8 +367,8 @@ export class InlineDiffReviewController implements vscode.CodeLensProvider, vsco
 					hoverMessage: hoverMsg,
 				})
 			} else {
-				// Pure deletion
-				const targetLine = Math.min(hunk.newStart, editor.document.lineCount - 1)
+				// Pure insertion before originalStart
+				const targetLine = Math.min(hunk.originalStart, editor.document.lineCount - 1)
 				const range = new vscode.Range(
 					new vscode.Position(targetLine, 0),
 					new vscode.Position(targetLine, Number.MAX_SAFE_INTEGER),

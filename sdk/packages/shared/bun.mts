@@ -20,15 +20,15 @@ const runBuild = async (
 		throw: false,
 	});
 
-	if (!result.success) {
-		throw new Error(`Failed ${name} build`);
-	}
-
 	if (result.logs.length > 0) {
 		console.warn(`${name} build emitted logs:`);
 		for (const log of result.logs) {
-			console.warn(log);
+			console.log(JSON.stringify(log, null, 2));
 		}
+	}
+
+	if (!result.success) {
+		throw new Error(`Failed ${name} build`);
 	}
 };
 
@@ -41,9 +41,11 @@ await runBuild("node", {
 		"./src/node.ts",
 		"./src/remote-config/index.ts",
 		"./src/storage/index.ts",
+		"./src/harness/index.ts",
 	],
 	outdir: "./dist",
 	target: "node",
+	external: ["@truefoundry/trueforge-sdk", "vscode"],
 	minify,
 	sourcemap,
 });

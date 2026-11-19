@@ -750,6 +750,7 @@
       "name": "@cline/shared",
       "version": "0.2.0",
       "dependencies": {
+        "@truefoundry/trueforge-sdk": "^0.184.1",
         "aws4fetch": "^1.0.20",
         "jsonrepair": "^3.13.2",
         "zod": "^4.3.6",

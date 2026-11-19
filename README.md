@@ -226,6 +226,84 @@ git diff origin/main | cline "Review these changes for issues"
 cline --json "List all TODO comments" | jq -r 'select(.type == "agent_event" and .event.text) | .event.text'
 ```
 
+## TrueFoundry Forge-a-thon Integration
+
+This fork of Cline transforms the VS Code extension into a client of the **TrueForge Agent Harness**:
+- **Zero local agent loop**: TrueForge runs the agentic loop, manages iteration budgets, compaction, and tool scheduling.
+- **Zero direct provider calls**: All model traffic flows through TrueForge. No provider SDKs or provider endpoints are bundled in the extension.
+- **MCP Editor Server (`forge-editor`)**: The extension serves workspace capabilities (`read_file`, `list_dir`, `search_workspace`, `propose_edit`, `propose_write`) over a streamable HTTP MCP server authenticated with bearer tokens.
+- **Approval-gated modifications**: Propose tools (`propose_edit`, `propose_write`) are gated by TrueForge tool approval (`tool.approval_required`). Writes only occur after recorded user approval in `ReviewBroker`.
+
+### Architecture Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Editor as VS Code / InlineDiffReviewController
+    participant Extension as Extension Client (TurnRunner)
+    participant Broker as ReviewBroker
+    participant TrueForge as TrueForge Server (:8790)
+    participant MCPServer as Forge Editor MCP (:port/mcp)
+
+    User->>Extension: Submits prompt in chat
+    Extension->>TrueForge: sessions.createTurnStream(sessionId, input)
+    TrueForge->>Extension: model.message / text deltas
+    TrueForge->>Extension: tool.approval_required (propose_edit)
+    Extension->>Editor: InlineDiffReviewController.startReview(uri, original, new)
+    Note over Editor: Auto-save safe: buffer is NOT mutated before approval.<br/>git status remains 100% clean.
+    Editor-->>User: Visual CodeLens ("Accept All", "Reject All", per-hunk)
+    User->>Editor: Clicks "Accept All" / "Accept Hunk"
+    Editor->>Extension: onDecision({ allow: true, acceptedHunkIds })
+    Extension->>Broker: recordApproval(hash, acceptedHunkIds)
+    Extension->>TrueForge: Resumes turn with user.tool_approval (status: allow)
+    TrueForge->>MCPServer: Calls propose_edit(path, edits)
+    MCPServer->>Broker: consumeApproval(hash) [Single-Use]
+    Broker-->>MCPServer: Approval verified
+    MCPServer->>Editor: Writes approved hunks to disk & pushes to ChangeLog
+    TrueForge->>Extension: turn.done (status: done)
+    Extension->>User: Renders completion in chat
+```
+
+### Starting TrueForge Locally
+
+TrueForge blocks loopback URLs by default. You must launch it with `OUTBOUND_URL_ALLOWED_HOSTS` so it can access the extension's local MCP editor server:
+
+**PowerShell (Windows):**
+```powershell
+$env:OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1","localhost"]'
+npx @truefoundry/trueforge@latest
+```
+
+**macOS / Linux:**
+```bash
+OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1","localhost"]' npx @truefoundry/trueforge@latest
+```
+
+### Model Configuration
+
+Configure the models in your VS Code settings (`settings.json`):
+
+```json
+{
+  "cline.trueforge.baseUrl": "http://127.0.0.1:8790",
+  "cline.trueforge.modelId": "groq/openai-gpt-oss-20b",
+  "cline.trueforge.fallbackModelId": "google-gemini/gemini-2.5-flash"
+}
+```
+
+Tested models:
+- **`groq/openai-gpt-oss-20b`** (Recommended fast primary): Fast inference and high token throughput without hitting restrictive TPM limits.
+- **`google-gemini/gemini-2.5-flash`** (Recommended fallback): High-context, reliable secondary model automatically engaged if primary fails.
+- **`groq/openai-gpt-oss-120b`**: High reasoning capabilities; free tier has an 8,000 TPM limit.
+
+### Diff Review and Auto-Save Safety
+
+1. **Auto-Save Safe**: `InlineDiffReviewController` renders proposed changes via VS Code decorations and CodeLens without modifying the underlying editor document buffer prior to user approval. `files.autoSave = "afterDelay"` or `"onFocusChange"` will never flush unapproved edits to disk.
+2. **ReviewBroker Invariant**: Approvals are single-use SHA-256 tokens that expire after 10 minutes. The MCP server rejects any edit attempt lacking a valid token.
+3. **Undo Support**: Every successful write is tracked in `ChangeLog`. Trigger `cline.undoForgeChange` to revert the last approved modification.
+4. **Context Visibility**: System instructions mandate that the agent output a `Context: <paths:lines>` line prior to proposing any changes.
+
 ## Contributing
 
 Start with the [Contributing Guide](CONTRIBUTING.md). Join our [Discord](https://discord.gg/cline) and head to the `#contributors` channel to connect with other contributors. Check our [careers page](https://cline.bot/join-us) for full-time roles.

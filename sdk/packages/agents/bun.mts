@@ -3,7 +3,7 @@ export {};
 
 // Externalize third-party runtime deps plus the provider/runtime layer that
 // the Agent facade loads dynamically. `@cline/shared` stays bundled.
-const external = ["@cline/llms", "nanoid", "vscode"];
+const external = ["@cline/llms", "@truefoundry/trueforge-sdk", "nanoid", "vscode"];
 const sourcemap = Bun.env.CLINE_SOURCEMAPS === "1" ? "linked" : "none";
 // minify: true keeps identifier mangling active even when sourcemaps are enabled.
 const minify = Bun.env.CLINE_SOURCEMAPS !== "1";

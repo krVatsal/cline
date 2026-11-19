@@ -8,6 +8,8 @@
  * Approvals are single-use and expire after 10 minutes (600,000 ms).
  */
 
+import { forgeLogger } from "./logger";
+
 export interface ApprovalEntry {
 	key: string;
 	acceptedHunkIds: string[];
@@ -34,6 +36,7 @@ export class ReviewBroker {
 			acceptedHunkIds: [...acceptedHunkIds],
 			createdAt: Date.now(),
 		});
+		forgeLogger.log(`[ReviewBroker] Recorded approval for hash=${key}, hunks=${JSON.stringify(acceptedHunkIds)}`);
 	}
 
 	/**
@@ -69,6 +72,7 @@ export class ReviewBroker {
 
 		// Single-use: delete immediately
 		this.approvals.delete(key);
+		forgeLogger.log(`[ReviewBroker] Consumed approval for hash=${key}`);
 		return { acceptedHunkIds: entry.acceptedHunkIds };
 	}
 

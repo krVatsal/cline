@@ -32,7 +32,7 @@ export const OPENAI_CODEX_OAUTH_CONFIG = {
 	redirectUri: "http://localhost:1455/auth/callback",
 	scopes: "openid profile email offline_access",
 	callbackPort: 1455,
-	jwtClaimPath: "https://api.openai.com/auth",
+	jwtClaimPath: "https://auth.cline.local/auth",
 	refreshBufferMs: 5 * 60 * 1000,
 	retryableTokenGraceMs: 30 * 1000,
 	httpTimeoutMs: 30 * 1000,

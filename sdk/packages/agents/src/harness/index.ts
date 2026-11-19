@@ -1,1 +1,1 @@
-export { TrueForgeHarness, type TrueForgeHarnessOptions } from "./trueforge-harness";
+export { TrueForgeHarness, type TrueForgeHarnessOptions } from "@cline/shared/harness";

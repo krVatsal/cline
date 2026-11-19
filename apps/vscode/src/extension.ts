@@ -62,6 +62,8 @@ import { LG_TASK_URI_PATH, SharedUriHandler, TASK_URI_PATH } from "./services/ur
 import { ShowMessageType } from "./shared/proto/host/window"
 import { fileExistsAtPath } from "./utils/fs"
 
+let activeEditorServer: ForgeEditorServer | undefined
+
 export async function reportRolloutActivation(input: RolloutBundleActivation): Promise<void> {
 	await telemetryService.captureRolloutBundleActivated(input)
 }
@@ -165,11 +167,6 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Register the inline diff review controller with accept/reject CodeLens and decorations
 	const inlineReviewController = InlineDiffReviewController.getInstance()
 	context.subscriptions.push(inlineReviewController)
-	;(globalThis as any).clineInlineReview = inlineReviewController
-	;(globalThis as any).forgeReviewBroker = reviewBroker
-	;(globalThis as any).forgeChangeLog = changeLog
-	;(globalThis as any).forgeCreateEditProposal = createEditProposal
-	;(globalThis as any).forgeCreateWriteProposal = createWriteProposal
 
 	// Initialize Forge Editor MCP Server
 	const workspaceFolders = vscode.workspace.workspaceFolders
@@ -178,7 +175,12 @@ export async function activate(context: vscode.ExtensionContext) {
 	let editorServer: ForgeEditorServer | undefined
 	try {
 		editorServer = await startForgeEditorServer({ workspaceRoot: rootPath })
-		;(globalThis as any).forgeEditorServer = editorServer
+		activeEditorServer = editorServer
+		context.subscriptions.push({
+			dispose: () => {
+				editorServer?.stop()
+			},
+		})
 		Logger.log(`[Forge] Editor MCP Server running at ${editorServer.url}`)
 
 		// Re-register with TrueForge on every extension start because port and token are fresh
@@ -745,9 +747,9 @@ async function getBinaryLocation(name: string): Promise<string> {
 export async function deactivate() {
 	// Stop Forge Editor MCP Server
 	try {
-		const srv = (globalThis as any).forgeEditorServer as ForgeEditorServer | undefined
-		if (srv) {
-			await srv.stop()
+		if (activeEditorServer) {
+			await activeEditorServer.stop()
+			activeEditorServer = undefined
 		}
 	} catch {}
 
