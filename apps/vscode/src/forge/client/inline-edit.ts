@@ -25,6 +25,55 @@ export interface InlineEditOptions {
 }
 
 /**
+ * Creates the agent specification for the scoped inline code editor agent.
+ * Shared between runtime session creation and exported agent/*.json definitions to prevent drift.
+ */
+export function createInlineAgentSpec(options?: { model?: string }) {
+	const modelName = options?.model || "groq/openai-gpt-oss-20b";
+	const inlineInstructions =
+		"You are an expert code editor. Change ONLY the selected region and its docstring in the specified file. " +
+		"Do not explore or touch any other files or regions. " +
+		"Use read_file to inspect the target file around the specified line numbers, then use propose_edit to propose exact replacements. " +
+		"When calling propose_edit, provide path and edits, where each edit object contains BOTH 'old_text' (the exact text to replace) and 'new_text' (the replacement text). " +
+		"Output your proposed changes via propose_edit.";
+
+	return {
+		$schema: "https://raw.githubusercontent.com/truefoundry/trueforge-sdk/main/agent-spec.schema.json",
+		name: "inline-agent",
+		description: "Scoped inline code editor agent connected to Forge editor MCP server for selected code regions.",
+		spec: {
+			model: {
+				name: modelName,
+				params: {
+					parallelToolCalls: false,
+				},
+			},
+			instructions: inlineInstructions,
+			mcpServers: [
+				{
+					name: "forge-editor",
+					preload: true,
+					enableTools: ["read_file", "propose_edit"],
+					preloadTools: ["read_file", "propose_edit"],
+					requireApprovalForTools: ["propose_edit"],
+				},
+			],
+			config: {
+				iterationLimit: 8,
+				contextManagement: {
+					compaction: {
+						enabled: true,
+					},
+				},
+				dynamicSubAgents: {
+					enabled: false,
+				},
+			},
+		},
+	};
+}
+
+/**
  * Executes an inline edit command on the user's active editor selection.
  * Flow:
  * 1. Checks active editor and selection.

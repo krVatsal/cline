@@ -228,11 +228,24 @@ cline --json "List all TODO comments" | jq -r 'select(.type == "agent_event" and
 
 ## TrueFoundry Forge-a-thon Integration
 
-This fork of Cline transforms the VS Code extension into a client of the **TrueForge Agent Harness**:
-- **Zero local agent loop**: TrueForge runs the agentic loop, manages iteration budgets, compaction, and tool scheduling.
-- **Zero direct provider calls**: All model traffic flows through TrueForge. No provider SDKs or provider endpoints are bundled in the extension.
-- **MCP Editor Server (`forge-editor`)**: The extension serves workspace capabilities (`read_file`, `list_dir`, `search_workspace`, `propose_edit`, `propose_write`) over a streamable HTTP MCP server authenticated with bearer tokens.
-- **Approval-gated modifications**: Propose tools (`propose_edit`, `propose_write`) are gated by TrueForge tool approval (`tool.approval_required`). Writes only occur after recorded user approval in `ReviewBroker`.
+This fork of Cline transforms the VS Code extension into a client of the **TrueForge Agent Harness**.
+
+- **Upstream Repository**: [https://github.com/cline/cline](https://github.com/cline/cline)
+- **Fork Base Commit SHA**: `94eecbbe1a2f899c66b118d13656651b0a884e1f`
+- **License Notice**: In accordance with the Apache License, Version 2.0, modified files carry prominent notices stating that they have been altered from upstream.
+
+### What Was Changed and Why
+
+1. **Stripped Provider Layer**: Upstream Cline directly called third-party model providers using custom SDKs and provider URLs. All direct provider SDKs and provider URLs were stripped from the extension bundle. All model traffic now routes strictly through TrueForge.
+2. **Stripped Local Agent Loop**: The local agentic loop, prompt builders, and tool-parsing logic were removed. TrueForge runs the agentic loop, managing context, compaction, sub-agents, and tool scheduling.
+3. **TrueForge Client (`TurnRunner`)**: A lightweight client integrating `@truefoundry/trueforge-sdk`. Connects to TrueForge, creates sessions, streams turns, merges deltas, and handles tool approvals.
+4. **Streamable HTTP MCP Server (`ForgeEditorServer`)**: Exposes workspace tools (`read_file`, `list_dir`, `search_workspace`, `propose_edit`, `propose_write`) over HTTP MCP authenticated with ephemeral bearer tokens. All outputs are capped to prevent token exhaustion.
+5. **Review Broker (`ReviewBroker`)**: Cryptographic gatekeeper ensuring zero writes occur without explicit user approval. Approved diffs receive single-use SHA-256 tokens that expire after 10 minutes.
+6. **Per-Hunk Review (`InlineDiffReviewController`)**: Visual inline diff controller rendering decorations and CodeLens actions ("Accept All", "Reject All", per-hunk buttons). Auto-save safe: editor documents are never modified in memory prior to explicit user approval.
+7. **Inline Edit Command (`Forge: Edit Selection`)**: Registered command `cline.editSelection` bound to `Ctrl+Alt+E` (Windows/Linux) or `Cmd+Alt+E` (macOS). Prompts for an instruction and runs a scoped agent targeting only the selected lines without passing entire file context.
+8. **Resilience & Run Guard**: Robust error classification (`classifyTurnError`) categorizing failures into `AUTH`, `NETWORK`, `TRUEFORGE_DOWN`, `MODEL_FATAL`, and `RETRYABLE`. Implements exponential backoff retries and automatic seamless fallback to `fallbackModelId` without replay when changes have already been applied.
+9. **Dynamic Sub-Agent Delegation**: Main agent delegates read-only workspace exploration to dynamic sub-agents (`create_sub_agent`), returning ranked file lists with reasons for multi-file requests.
+10. **Change Log & Undo**: Tracks applied file changes in a LIFO stack. The `cline.undoForgeChange` command cleanly restores previous file states.
 
 ### Architecture Flow
 
@@ -265,19 +278,70 @@ sequenceDiagram
     Extension->>User: Renders completion in chat
 ```
 
-### Starting TrueForge Locally
+### Setup From Clean Clone
 
-TrueForge blocks loopback URLs by default. You must launch it with `OUTBOUND_URL_ALLOWED_HOSTS` so it can access the extension's local MCP editor server:
+#### 1. Prerequisites
+- **Node.js**: >= 22.0.0
+- **Bun**: >= 1.2.0
 
-**PowerShell (Windows):**
+#### 2. Start TrueForge Locally
+TrueForge blocks loopback URLs by default. Launch it with `OUTBOUND_URL_ALLOWED_HOSTS` so it can access the extension's local MCP editor server:
+
+**Windows (PowerShell):**
 ```powershell
 $env:OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1","localhost"]'
 npx @truefoundry/trueforge@latest
 ```
 
-**macOS / Linux:**
+**macOS / Linux (Bash/Zsh):**
 ```bash
 OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1","localhost"]' npx @truefoundry/trueforge@latest
+```
+
+#### 3. Register Providers & Models in TrueForge
+Set your API keys and run the registration script:
+
+**Windows (PowerShell):**
+```powershell
+$env:GROQ_API_KEY="your-groq-key"
+$env:GEMINI_API_KEY="your-gemini-key"
+bun scripts/register-providers.ts
+```
+
+**macOS / Linux:**
+```bash
+export GROQ_API_KEY="your-groq-key"
+export GEMINI_API_KEY="your-gemini-key"
+bun scripts/register-providers.ts
+```
+
+#### 4. Build the SDK and Extension
+```bash
+bun install
+bun run build:sdk
+cd apps/vscode
+bun esbuild.mjs
+```
+
+#### 5. Running the Extension in VS Code
+Open the repository in VS Code and press `F5` to launch the Extension Development Host.
+
+#### 6. Running Tests
+Run the comprehensive Forge unit test suite:
+```bash
+cd apps/vscode
+bun test src/forge
+```
+
+### Agent Specifications & Drift Prevention
+
+Agent definitions are generated directly from runtime factory functions in `turn-runner.ts` and `inline-edit.ts`:
+- **`agent/editor-agent.json`**: Primary engineering partner with full editor tools, context output requirements, and dynamic sub-agent delegation.
+- **`agent/inline-agent.json`**: Scoped inline editor with minimal tool permissions (`read_file`, `propose_edit`).
+
+To regenerate specs without drift:
+```bash
+bun run generate:specs
 ```
 
 ### Model Configuration
@@ -293,7 +357,7 @@ Configure the models in your VS Code settings (`settings.json`):
 ```
 
 Tested models:
-- **`groq/openai-gpt-oss-20b`** (Recommended fast primary): Fast inference and high token throughput without hitting restrictive TPM limits.
+- **`groq/openai-gpt-oss-20b`** (Recommended fast primary): High token throughput without hitting restrictive TPM limits.
 - **`google-gemini/gemini-2.5-flash`** (Recommended fallback): High-context, reliable secondary model automatically engaged if primary fails.
 - **`groq/openai-gpt-oss-120b`**: High reasoning capabilities; free tier has an 8,000 TPM limit.
 
@@ -302,7 +366,7 @@ Tested models:
 1. **Auto-Save Safe**: `InlineDiffReviewController` renders proposed changes via VS Code decorations and CodeLens without modifying the underlying editor document buffer prior to user approval. `files.autoSave = "afterDelay"` or `"onFocusChange"` will never flush unapproved edits to disk.
 2. **ReviewBroker Invariant**: Approvals are single-use SHA-256 tokens that expire after 10 minutes. The MCP server rejects any edit attempt lacking a valid token.
 3. **Undo Support**: Every successful write is tracked in `ChangeLog`. Trigger `cline.undoForgeChange` to revert the last approved modification.
-4. **Context Visibility**: System instructions mandate that the agent output a `Context: <paths:lines>` line prior to proposing any changes.
+4. **Context Visibility**: System instructions mandate that the agent output a structured `Context:` list with reasons prior to proposing any changes.
 
 ## Contributing
 

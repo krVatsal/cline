@@ -56,6 +56,77 @@ export interface TurnRunnerOptions {
 	baseUrl?: string;
 }
 
+/**
+ * Creates the agent specification for the main Forge editor agent.
+ * Shared between runtime session creation and exported agent/*.json definitions to prevent drift.
+ */
+export function createEditorAgentSpec(options?: {
+	model?: string;
+	instructions?: string;
+	iterationLimit?: number;
+	preloadTools?: string[];
+	enableTools?: string[];
+	requireApprovalForTools?: string[];
+}) {
+	const modelName = options?.model || "groq/openai-gpt-oss-20b";
+	const coreTools = options?.preloadTools ?? ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
+	const allTools = options?.enableTools ?? ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
+	const approvalTools = options?.requireApprovalForTools ?? ["propose_edit", "propose_write"];
+
+	const defaultInstructions =
+		"You are an expert AI software engineering partner assisting the user in their codebase.\n" +
+		"Inspect files using read_file, search_workspace, and list_dir.\n" +
+		"For multi-file tasks or requests touching more than one artefact, you MUST first delegate read-only codebase exploration to a sub-agent using the create_sub_agent tool (e.g. name: 'codebase-explorer', input: 'Search the workspace for implementation files, tests, and documentation related to the request, and return a ranked file list with reasons').\n" +
+		"Wait for the sub-agent to return the ranked list of files before taking further action.\n" +
+		"Before proposing your first edit in a turn, you MUST output a list in the following format:\n" +
+		"Context:\n" +
+		"- <relative path>:<line range> - <why this file matters>\n" +
+		"(one line per file inspected, with forward slashes and exact line ranges).\n" +
+		"Example:\n" +
+		"Context:\n" +
+		"- src/flask/helpers.py:10-45 - contains get_debug_flag implementation and docstring\n" +
+		"- tests/test_helpers.py:50-80 - unit tests verifying debug flag behavior\n" +
+		"- docs/config.rst:20-35 - documentation describing FLASK_DEBUG behavior\n" +
+		"Do not guess line numbers; report the ranges you actually read using read_file.\n" +
+		"When modifying files, propose changes using propose_edit or propose_write.\n" +
+		"Edits will be presented to the user for approval before writing to disk.";
+
+	return {
+		$schema: "https://raw.githubusercontent.com/truefoundry/trueforge-sdk/main/agent-spec.schema.json",
+		name: "editor-agent",
+		description: "Autonomous software engineering agent connected to Forge editor MCP server for inspected, safe file reading and diff proposals.",
+		spec: {
+			model: {
+				name: modelName,
+				params: {
+					parallelToolCalls: false,
+				},
+			},
+			instructions: options?.instructions || defaultInstructions,
+			mcpServers: [
+				{
+					name: "forge-editor",
+					preload: true,
+					enableTools: allTools,
+					preloadTools: coreTools,
+					requireApprovalForTools: approvalTools,
+				},
+			],
+			config: {
+				iterationLimit: options?.iterationLimit ?? 30,
+				contextManagement: {
+					compaction: {
+						enabled: true,
+					},
+				},
+				dynamicSubAgents: {
+					enabled: true,
+				},
+			},
+		},
+	};
+}
+
 export class TurnRunner {
 	private readonly client: TrueForge;
 	private readonly editorServer: ForgeEditorServer;
@@ -123,61 +194,18 @@ export class TurnRunner {
 		const modelName = modelOverride || this.activeModel;
 		this.activeModel = modelName;
 
-		// Tools configuration: default to full editor suite or use explicit overrides
-		const coreTools = this.preloadTools ?? ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
-		const allTools = this.enableTools ?? ["read_file", "list_dir", "search_workspace", "propose_edit", "propose_write"];
-		const approvalTools = this.requireApprovalForTools ?? ["propose_edit", "propose_write"];
-
-		// Item 3 & 4: Explicit Context: list with reasons and sub-agent delegation for multi-file tasks
-		const defaultInstructions =
-			"You are an expert AI software engineering partner assisting the user in their codebase.\n" +
-			"Inspect files using read_file, search_workspace, and list_dir.\n" +
-			"For multi-file tasks or requests touching more than one artefact, you MUST first delegate read-only codebase exploration to a sub-agent using the create_sub_agent tool (e.g. name: 'codebase-explorer', input: 'Search the workspace for implementation files, tests, and documentation related to the request, and return a ranked file list with reasons').\n" +
-			"Wait for the sub-agent to return the ranked list of files before taking further action.\n" +
-			"Before proposing your first edit in a turn, you MUST output a list in the following format:\n" +
-			"Context:\n" +
-			"- <relative path>:<line range> - <why this file matters>\n" +
-			"(one line per file inspected, with forward slashes and exact line ranges).\n" +
-			"Example:\n" +
-			"Context:\n" +
-			"- src/flask/helpers.py:10-45 - contains get_debug_flag implementation and docstring\n" +
-			"- tests/test_helpers.py:50-80 - unit tests verifying debug flag behavior\n" +
-			"- docs/config.rst:20-35 - documentation describing FLASK_DEBUG behavior\n" +
-			"Do not guess line numbers; report the ranges you actually read using read_file.\n" +
-			"When modifying files, propose changes using propose_edit or propose_write.\n" +
-			"Edits will be presented to the user for approval before writing to disk.";
+		const agentDef = createEditorAgentSpec({
+			model: modelName,
+			instructions: this.instructions,
+			iterationLimit: this.iterationLimit,
+			preloadTools: this.preloadTools,
+			enableTools: this.enableTools,
+			requireApprovalForTools: this.requireApprovalForTools,
+		});
 
 		const session = await this.client.sessions.create({
 			agent: {
-				spec: {
-					model: {
-						name: modelName,
-						params: {
-							parallelToolCalls: false,
-						},
-					},
-					instructions: this.instructions || defaultInstructions,
-					mcpServers: [
-						{
-							name: "forge-editor",
-							preload: true,
-							enableTools: allTools,
-							preloadTools: coreTools,
-							requireApprovalForTools: approvalTools,
-						},
-					],
-					config: {
-						iterationLimit: this.iterationLimit,
-						contextManagement: {
-							compaction: {
-								enabled: true,
-							},
-						},
-						dynamicSubAgents: {
-							enabled: true,
-						},
-					},
-				},
+				spec: agentDef.spec as any,
 			},
 		});
 
