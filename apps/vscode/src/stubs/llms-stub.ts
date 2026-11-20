@@ -67,8 +67,34 @@ export function isRetryableProviderError(error: any): boolean {
 	return false;
 }
 
+export function createAgentModel(...args: any[]): any {
+	return {
+		stream: async function* () {},
+		getModelInfo: () => ({}),
+	};
+}
+
 export function createGateway(...args: any[]): any {
-	return {};
+	const dummyModel: any = {
+		stream: async function* () {},
+		getModelInfo: () => ({}),
+	};
+	const gateway: any = {
+		registerProvider: () => gateway,
+		configureProvider: () => gateway,
+		listProviders: () => [],
+		listModels: () => [],
+		createAgentModel: () => dummyModel,
+		stream: async function* () {},
+	};
+	return new Proxy(gateway, {
+		get(target, prop) {
+			if (prop in target) {
+				return (target as any)[prop];
+			}
+			return () => dummyModel;
+		},
+	});
 }
 
 export class LangfuseAttributesSpanProcessor {
