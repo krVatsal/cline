@@ -178,8 +178,172 @@ export function hasRegisteredHandler(...args: any[]): boolean {
 	return false;
 }
 
+export const BUILT_IN_PROVIDER: Record<string, string> = new Proxy(
+	{
+		ANTHROPIC: "anthropic",
+		CLAUDE_CODE: "claude-code",
+		CLINE: "cline",
+		CLINE_PASS: "cline-pass",
+		ELEVENLABS: "elevenlabs",
+		OPENAI_COMPATIBLE: "openai-compatible",
+		OPENAI_NATIVE: "openai-native",
+		OPENAI_CODEX: "openai-codex",
+		OPENAI_CODEX_CLI: "openai-codex-cli",
+		OPENCODE: "opencode",
+		BEDROCK: "bedrock",
+		VERTEX: "vertex",
+		GEMINI: "gemini",
+		OLLAMA: "ollama",
+		LMSTUDIO: "lmstudio",
+		DEEPSEEK: "deepseek",
+		XAI: "xai",
+		TOGETHER: "together",
+		FIREWORKS: "fireworks",
+		GROQ: "groq",
+		POOLSIDE: "poolside",
+		CEREBRAS: "cerebras",
+		SAMBANOVA: "sambanova",
+		NEBIUS: "nebius",
+		CRUSOE: "crusoe",
+		WALLY: "wally",
+		BASETEN: "baseten",
+		REQUESTY: "requesty",
+		LITELLM: "litellm",
+		HUGGINGFACE: "huggingface",
+		VERCEL_AI_GATEWAY: "vercel-ai-gateway",
+		V0: "v0",
+		AIAND: "aiand",
+		AIHUBMIX: "aihubmix",
+		HICAP: "hicap",
+		NOUS_RESEARCH: "nousResearch",
+		HUAWEI_CLOUD_MAAS: "huawei-cloud-maas",
+		WANDB: "wandb",
+		XIAOMI: "xiaomi",
+		TENCENT_TOKENHUB: "tencent-tokenhub",
+		KILO: "kilo",
+		ZAI: "zai",
+		ZAI_CODING_PLAN: "zai-coding-plan",
+		QWEN: "qwen",
+		QWEN_CODE: "qwen-code",
+		DOUBAO: "doubao",
+		MISTRAL: "mistral",
+		MOONSHOT: "moonshot",
+		ASKSAGE: "asksage",
+		MINIMAX: "minimax",
+		DIFY: "dify",
+		OCA: "oca",
+		SAPAICORE: "sapaicore",
+		OPENROUTER: "openrouter",
+	},
+	{
+		get: (target, prop) => {
+			if (typeof prop === "string" && prop in target) {
+				return (target as any)[prop];
+			}
+			return typeof prop === "string" ? prop.toLowerCase().replace(/_/g, "-") : undefined;
+		},
+	},
+);
+
+export const PROVIDER_ID_ALIASES: Record<string, string> = {
+	openai: BUILT_IN_PROVIDER.OPENAI_COMPATIBLE,
+	togetherai: BUILT_IN_PROVIDER.TOGETHER,
+	"sap-ai-core": BUILT_IN_PROVIDER.SAPAICORE,
+};
+
+export const BUILT_IN_PROVIDER_IDS: string[] = Object.values(BUILT_IN_PROVIDER);
+
+export function isBuiltInProviderId(id: string): boolean {
+	return Boolean(id);
+}
+
 export function normalizeProviderId(id: string): string {
-	return id || "";
+	if (!id) return "";
+	const normalized = id.trim();
+	return PROVIDER_ID_ALIASES[normalized] ?? normalized;
+}
+
+export function resolveProviderModelCatalogKeys(id: string): string[] {
+	return [id];
+}
+
+export function getGeneratedModelsForRuntimeProvider(...args: any[]): Record<string, any> {
+	return {};
+}
+
+export function getModelOverridesForProvider(...args: any[]): Record<string, any> {
+	return {};
+}
+
+export function getProviderIds(): string[] {
+	return BUILT_IN_PROVIDER_IDS;
+}
+
+export async function getAllProviders(): Promise<any[]> {
+	return [];
+}
+
+export async function getProvider(...args: any[]): Promise<any> {
+	return undefined;
+}
+
+export function unregisterModel(...args: any[]): void {}
+export function unregisterProvider(...args: any[]): void {}
+
+export async function fetchLiveProviderModels(...args: any[]): Promise<any> {
+	return {};
+}
+
+export async function fetchVercelTranscriptionModels(...args: any[]): Promise<any> {
+	return {};
+}
+
+export function filterImageOutputModels(models: any): any {
+	return models;
+}
+
+export function filterOpenAICodexModels(models: any): any {
+	return models;
+}
+
+export function sortModelsByReleaseDate(models: any): any {
+	return models;
+}
+
+export function preferCanonicalModelIds(models: any): any {
+	return models;
+}
+
+export function providerOffersModelTool(...args: any[]): boolean {
+	return false;
+}
+
+export function builtinProviderSupportsModelOperation(...args: any[]): boolean {
+	return false;
+}
+
+export function resolveAudioTranscriptionRoute(...args: any[]): any {
+	return undefined;
+}
+
+export function resolveProviderApiLineBaseUrl(...args: any[]): string {
+	return "";
+}
+
+export function getBuiltinStreamingTranscriptionModels(...args: any[]): any[] {
+	return [];
+}
+
+export function withLangfuseTraceAttributes(...args: any[]): any {
+	return args[0];
+}
+
+export async function transcribeAudio(...args: any[]): Promise<any> {
+	return { text: "" };
+}
+
+export async function createStreamingAudioTranscriptionSession(...args: any[]): Promise<any> {
+	return {};
 }
 
 export function resolveGatewayProviderRegistrationSync(...args: any[]): any {
@@ -190,15 +354,13 @@ export function toGatewayModelCapabilities(...args: any[]): any {
 	return {};
 }
 
-export const GENERATED_CLINE_RECOMMENDED_MODELS: any[] = [];
+export const GENERATED_CLINE_RECOMMENDED_MODELS: any = {};
 
 export function getGeneratedProviderModels(...args: any[]): any[] {
 	return [];
 }
 
 export const VERCEL_OPENROUTER_MODEL_ID_ALIAS_RULES: any[] = [];
-
-export const BUILT_IN_PROVIDER_IDS: string[] = [];
 
 export async function getProviderCollection(...args: any[]): Promise<any> {
 	return {
